@@ -78,7 +78,7 @@ impl ReadProt for VarInt {
     async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> {
         let mut value: i32 = 0;
         let mut pos: u32 = 0;
-        let mut current_byte: u8 = 0;
+        let mut current_byte: u8;
         loop {
             let mut buf = vec![0u8; 1];
             stream.read_exact(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;

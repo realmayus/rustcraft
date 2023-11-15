@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 
-use async_std::io::{ReadExt, WriteExt};
 use async_std::net::{TcpListener, TcpStream};
 use async_std::task;
 use base64::Engine;
@@ -10,7 +9,6 @@ use futures::StreamExt;
 use crate::connection::Connection;
 use crate::connection::ConnectionState::Handshake;
 use crate::packets::Packet;
-use crate::protocol_types::{ReadProt, SizedProt, WriteProt};
 
 pub(crate) mod protocol_util;
 mod connection;

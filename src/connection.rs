@@ -1,4 +1,3 @@
-use async_std::net::TcpStream;
 
 #[derive(Debug)]
 pub(crate) enum ConnectionState {
