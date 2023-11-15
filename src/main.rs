@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use async_std::io::{ReadExt, WriteExt};
@@ -29,7 +28,7 @@ async fn handle_connection(mut stream: TcpStream, assets: &Assets) {
         let alive = stream.peek(&mut [0]).await;
         match alive {
             Ok(0) => {
-                println!("Connection {} closed.", stream.peer_addr().unwrap().ip());
+                println!("Connection {} closed.", stream.peer_addr().map(|some| some.ip().to_string()).unwrap_or("{unknown}".into()));
                 break;
             }
             Err(e) => {
@@ -42,8 +41,12 @@ async fn handle_connection(mut stream: TcpStream, assets: &Assets) {
         let packet = Packet::parse(&mut stream, &connection).await;
         match packet {
             Ok(p) => {
-                println!("Packet: {p:?}");
-                p.handle(&mut stream, &mut connection, assets).await
+                println!("{p:?}");
+                let res = p.handle(&mut stream, &mut connection, assets).await;
+                match res {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("Couldn't handle packet {e}")
+                }
             }
             Err(err) => println!("Couldn't parse packet: {err}")
         }
