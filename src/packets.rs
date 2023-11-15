@@ -1,15 +1,18 @@
 use std::fmt::{Debug, Formatter};
 use async_std::io;
-use async_std::io::ReadExt;
+use async_std::io::{Read, ReadExt, Write};
 use async_std::net::TcpStream;
+use async_trait::async_trait;
+use futures::AsyncRead;
+use crate::Assets;
 use crate::connection::{Connection, ConnectionState};
 use crate::protocol_types::{ReadProt, SizedProt, WriteProt};
 
 const REPLY: &str = r#"
 {
     "version": {
-        "name": "1.19.4",
-        "protocol": 762
+        "name": "1.20.2",
+        "protocol": 764
     },
     "players": {
         "max": 100,
@@ -22,9 +25,9 @@ const REPLY: &str = r#"
         ]
     },
     "description": {
-        "text": "Hello world"
+        "text": "made in §mogaml§rRUST §c§l(/) (°,,,,°) (/)"
     },
-    "favicon": "data:image/png;base64,<data>",
+    "favicon": "data:image/png;base64,§§§",
     "enforcesSecureChat": true,
     "previewsChat": true
 }
@@ -40,6 +43,33 @@ pub(crate) enum PacketData {
     PingRes,
 }
 
+impl SizedProt for PacketData {
+    fn size(&self) -> usize {
+        match self {
+            PacketData::Handshake(h) => h.next_state.size() + 2 + (h.server_address.len() as i32).size() + h.server_address.len() + h.prot_version.size(),
+            PacketData::StatusReq => 0,
+            PacketData::StatusRes(s) => {
+                println!("s.len {}, s.len.size {}", s.len(), (s.len() as i32).size());
+                (s.len() as i32).size() + s.len() },
+            PacketData::PingReq => 0,
+            PacketData::PingRes => 0,
+        }
+    }
+}
+
+#[async_trait]
+impl WriteProt for PacketData {
+    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
+        match self {
+            PacketData::StatusRes(s) => {
+                s.write(stream).await?;
+            }
+            _ => panic!("Can't write {:?}", self)
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct Packet {
     size: i32,
     id: i32,
@@ -51,7 +81,7 @@ impl Packet {
         let length = i32::read(stream).await.unwrap();
         let id = i32::read(stream).await.unwrap();
         let data = match (id, &connection.state) {
-            (0, ConnectionState::Handshake) => PacketData::Handshake(Handshake::parse(stream).await?),
+            (0, ConnectionState::Handshake) => PacketData::Handshake(Handshake::read(stream).await?),
             (0, ConnectionState::Status) => PacketData::StatusReq,
             _ => {
                 // eat remainder of packet
@@ -67,16 +97,38 @@ impl Packet {
         })
     }
 
-    pub(crate) async fn handle(&self, stream: &mut TcpStream, connection: &mut Connection) {
+    pub(crate) async fn handle(&self, stream: &mut TcpStream, connection: &mut Connection, assets: &Assets) {
         match &self.data {
             PacketData::Handshake(handshake) => handshake.handle(stream, connection).await,
             PacketData::StatusReq => {
-                String::from(REPLY).write(stream).await.unwrap()
+                println!("Sending JSON reply to StatusReq");
+                println!("{}", String::from(REPLY).replacen("§§§", assets.icon.as_ref(), 1));
+                let res = Packet::new(0x00, PacketData::StatusRes(String::from(REPLY).replacen("§§§", assets.icon.as_ref(), 1)));
+                res.write(stream).await.unwrap();
             }
             PacketData::StatusRes(_) => {}
             PacketData::PingReq => {}
             PacketData::PingRes => {}
         }
+    }
+
+    pub(crate) fn new(id: i32, data: PacketData) -> Packet {
+        println!("Packet has size {}", data.size());
+        Packet {
+            size: data.size() as i32 + id.size() as i32,
+            id,
+            data,
+        }
+    }
+}
+
+#[async_trait]
+impl WriteProt for Packet {
+    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
+        self.size.write(stream).await?;
+        self.id.write(stream).await?;
+        self.data.write(stream).await?;
+        Ok(())
     }
 }
 
@@ -95,16 +147,19 @@ pub(crate) struct Handshake {
 }
 
 impl Handshake {
-    async fn parse(stream: &mut TcpStream) -> Result<Handshake, String> {
+    pub(crate) async fn handle(&self, stream: &mut TcpStream, connection: &mut Connection) {
+        connection.state = ConnectionState::Status;
+    }
+}
+
+#[async_trait]
+impl ReadProt for Handshake {
+    async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> where Self: Sized {
         Ok(Handshake {
             prot_version: i32::read(stream).await?,
             server_address: String::read(stream).await?,
             server_port: u16::read(stream).await?,
             next_state: i32::read(stream).await?,
         })
-    }
-
-    pub(crate) async fn handle(&self, stream: &mut TcpStream, connection: &mut Connection) {
-        connection.state = ConnectionState::Status;
     }
 }

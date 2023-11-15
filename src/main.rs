@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 use async_std::io::{ReadExt, WriteExt};
 use async_std::net::{TcpListener, TcpStream};
 use async_std::task;
+use base64::Engine;
+use base64::engine::general_purpose;
 use futures::StreamExt;
 
 use crate::connection::Connection;
@@ -19,7 +21,7 @@ mod packets;
 const PORT: u16 = 25565;
 
 
-async fn handle_connection(mut stream: TcpStream) {
+async fn handle_connection(mut stream: TcpStream, assets: &Assets) {
     println!("New connection: {}", stream.peer_addr().unwrap().ip());
     let mut connection = Connection { state: Handshake };
     loop {
@@ -41,21 +43,28 @@ async fn handle_connection(mut stream: TcpStream) {
         match packet {
             Ok(p) => {
                 println!("Packet: {p:?}");
-                p.handle(&mut stream, &mut connection).await
+                p.handle(&mut stream, &mut connection, assets).await
             }
             Err(err) => println!("Couldn't parse packet: {err}")
         }
     }
 }
 
+struct Assets {
+    icon: String
+}
+
 async fn start_server() {
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], PORT))).await.unwrap();
-
+    let icon = async_std::fs::read("icon.png").await.unwrap();
+    let assets = Assets {
+        icon: general_purpose::STANDARD.encode(icon.as_slice()),
+    };
     listener
         .incoming()
-        .for_each_concurrent(/* limit */ None, |tcpstream| async move {
+        .for_each_concurrent(/* limit */ None, |tcpstream| async {
             let tcpstream = tcpstream.unwrap();
-            handle_connection(tcpstream).await;
+            handle_connection(tcpstream, &assets).await;
         })
         .await;
 }

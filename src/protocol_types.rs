@@ -42,13 +42,17 @@ impl ReadProt for i32 {
 
 impl SizedProt for i32 {
     fn size(&self) -> usize {
-        let mut value = *self;
+        let mut x = *self as u32;
+        let mut count = 0;
         loop {
-            if (value & !SEGMENT_BITS as i32) == 0 {
-                break value as usize
+            x >>= 7;
+            count += 1;
+
+            if x == 0 {
+                break count;
             }
-            value >>= 7;
         }
+
     }
 }
 
@@ -56,6 +60,70 @@ impl SizedProt for i32 {
 impl WriteProt for i32 {
     async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
         let mut x = *self as u32;
+        loop {
+            let mut temp = (x & 0b0111_1111) as u8;
+            x >>= 7;
+            if x != 0 {
+                temp |= 0b1000_0000;
+            }
+
+            stream.write_all(&[temp]).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+
+            if x == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ReadProt for i64 {
+    async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> {
+        let mut result = 0;
+        let mut num_read = 0;
+        loop {
+            let mut buf = vec![0u8; 1];
+            stream.read_exact(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+            let read = buf[0];
+            let value = i64::from(read & 0b0111_1111);
+            result |= value.overflowing_shl(7 * num_read).0;
+
+            num_read += 1;
+
+            if num_read > 10 {
+                break Err(format!(
+                    "VarInt too long (max length: 5, value read so far: {})",
+                    result
+                ));
+            }
+            if read & 0b1000_0000 == 0 {
+                break Ok(result);
+            }
+        }
+    }
+}
+
+impl SizedProt for i64 {
+    fn size(&self) -> usize {
+        let mut x = *self as u64;
+        let mut count = 0;
+        loop {
+            x >>= 7;
+            count += 1;
+
+            if x == 0 {
+                break count;
+            }
+        }
+
+    }
+}
+
+#[async_trait]
+impl WriteProt for i64 {
+    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
+        let mut x = *self as u64;
         loop {
             let mut temp = (x & 0b0111_1111) as u8;
             x >>= 7;
@@ -216,4 +284,135 @@ mod test {
         assert_eq!(buf[4], 8);
         Ok(())
     }
+
+    #[async_std::test]
+    async fn i64_0() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (0i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 0);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_1() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (1i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 1);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_2() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (2i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 2);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_127() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (127i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 127);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_128() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (128i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 128);
+        assert_eq!(buf[1], 1);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_255() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (255i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 255);
+        assert_eq!(buf[1], 1);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_2147483647() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (2147483647i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 255);
+        assert_eq!(buf[1], 255);
+        assert_eq!(buf[2], 255);
+        assert_eq!(buf[3], 255);
+        assert_eq!(buf[4], 7);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_9223372036854775807() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (9223372036854775807i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 255);
+        assert_eq!(buf[1], 255);
+        assert_eq!(buf[2], 255);
+        assert_eq!(buf[3], 255);
+        assert_eq!(buf[4], 255);
+        assert_eq!(buf[5], 255);
+        assert_eq!(buf[6], 255);
+        assert_eq!(buf[7], 255);
+        assert_eq!(buf[8], 127);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_n1() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (-1i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 255);
+        assert_eq!(buf[1], 255);
+        assert_eq!(buf[2], 255);
+        assert_eq!(buf[3], 255);
+        assert_eq!(buf[4], 255);
+        assert_eq!(buf[5], 255);
+        assert_eq!(buf[6], 255);
+        assert_eq!(buf[7], 255);
+        assert_eq!(buf[8], 255);
+        assert_eq!(buf[9], 1);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_n2147483648() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (-2147483648i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 128);
+        assert_eq!(buf[1], 128);
+        assert_eq!(buf[2], 128);
+        assert_eq!(buf[3], 128);
+        assert_eq!(buf[4], 248);
+        assert_eq!(buf[5], 255);
+        assert_eq!(buf[6], 255);
+        assert_eq!(buf[7], 255);
+        assert_eq!(buf[8], 255);
+        assert_eq!(buf[9], 1);
+        Ok(())
+    }
+
+    #[async_std::test]
+    async fn i64_n9223372036854775808() -> Result<(), String> {
+        let mut buf: Vec<u8> = vec![];
+        (-9223372036854775808i64).write(&mut buf).await?;
+        assert_eq!(buf[0], 128);
+        assert_eq!(buf[1], 128);
+        assert_eq!(buf[2], 128);
+        assert_eq!(buf[3], 128);
+        assert_eq!(buf[4], 128);
+        assert_eq!(buf[5], 128);
+        assert_eq!(buf[6], 128);
+        assert_eq!(buf[7], 128);
+        assert_eq!(buf[8], 128);
+        assert_eq!(buf[9], 1);
+        Ok(())
+    }
+
+
 }

@@ -10,3 +10,4 @@ colored = "2.0.4"
 futures = "0.3"
 async-std = { version = "1.12.0", features = ["attributes"] }
 async-trait = "0.1.74"
+base64 = "0.21.5"
