@@ -1,6 +1,10 @@
 use std::fmt::{Debug, Display, Formatter};
-use async_std::io::{Read, ReadExt, Write, WriteExt};
+use std::sync::Arc;
 use async_trait::async_trait;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
+use crate::Assets;
+use crate::connection::Connection;
 
 const SEGMENT_BITS: u8 = 0x7f;
 const CONTINUE_BIT: u8 = 0x80;
@@ -60,22 +64,35 @@ impl Debug for VarLong {
 
 #[async_trait]
 pub(crate) trait ReadProt {
-    async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> where Self: Sized;
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized;
 }
 
 #[async_trait]
 pub(crate) trait WriteProt {
-    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String>;
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String>;
 }
 
 pub(crate) trait SizedProt {
-    fn size(&self) -> usize;
+    fn prot_size(&self) -> usize;
 }
+
+#[async_trait]
+pub(crate) trait ServerPacket: SizedProt + ReadProt + Debug + Display + Sync + Send {
+    fn id() -> u8 where Self:Sized;
+
+    async fn handle(&self, stream: &mut TcpStream, connection: &mut Connection, assets: Arc<Assets>) -> Result<(), String>;
+
+}
+
+pub(crate) trait ClientPacket: SizedProt + WriteProt + Debug + Display {
+    fn id() -> u8;
+}
+
 
 
 #[async_trait]
 impl ReadProt for VarInt {
-    async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> {
         let mut value: i32 = 0;
         let mut pos: u32 = 0;
         let mut current_byte: u8;
@@ -94,7 +111,7 @@ impl ReadProt for VarInt {
 }
 
 impl SizedProt for VarInt {
-    fn size(&self) -> usize {
+    fn prot_size(&self) -> usize {
         let mut x = self.value as u32;
         let mut count = 0;
         loop {
@@ -111,7 +128,7 @@ impl SizedProt for VarInt {
 
 #[async_trait]
 impl WriteProt for VarInt {
-    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         let mut x = self.value as u32;
         loop {
             let mut temp = (x & 0b0111_1111) as u8;
@@ -132,7 +149,7 @@ impl WriteProt for VarInt {
 
 #[async_trait]
 impl ReadProt for VarLong {
-    async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> {
         let mut result = 0;
         let mut num_read = 0;
         loop {
@@ -158,7 +175,7 @@ impl ReadProt for VarLong {
 }
 
 impl SizedProt for VarLong {
-    fn size(&self) -> usize {
+    fn prot_size(&self) -> usize {
         let mut x = self.value as u64;
         let mut count = 0;
         loop {
@@ -174,7 +191,7 @@ impl SizedProt for VarLong {
 
 #[async_trait]
 impl WriteProt for VarLong {
-    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         let mut x = self.value as u64;
         loop {
             let mut temp = (x & 0b0111_1111) as u8;
@@ -195,7 +212,7 @@ impl WriteProt for VarLong {
 
 #[async_trait]
 impl ReadProt for String {
-    async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
         let len = VarInt::read(stream).await?;
         let len = len.value as u32;
         if len > 32767*4 + 3 { return Err(format!("String too long: {} B", len)) }
@@ -210,10 +227,16 @@ impl ReadProt for String {
 
 #[async_trait]
 impl WriteProt for String {
-    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         (VarInt { value: self.len() as i32 }).write(stream).await?;
         stream.write_all(self.as_bytes()).await.unwrap();
         Ok(())
+    }
+}
+
+impl SizedProt for String {
+    fn prot_size(&self) -> usize {
+        VarInt::from(self.len()).prot_size() + self.len()
     }
 }
 
@@ -251,7 +274,7 @@ fn u16tou8abe(v: u16) -> [u8; 2] {
 
 #[async_trait]
 impl ReadProt for u16 {
-    async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
         let mut buffer = [0; 2];
         stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
 
@@ -262,7 +285,7 @@ impl ReadProt for u16 {
 
 #[async_trait]
 impl WriteProt for u16 {
-    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         let data = u16tou8abe(*self);
         stream.write_all(&data).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(())
@@ -270,14 +293,14 @@ impl WriteProt for u16 {
 }
 
 impl SizedProt for u16 {
-    fn size(&self) -> usize {
+    fn prot_size(&self) -> usize {
         2
     }
 }
 
 #[async_trait]
 impl ReadProt for i64 {
-    async fn read(stream: &mut (impl Read + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
         let mut buffer = [0; 8];
         stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
         let mut value: u64 = buffer[0] as u64;
@@ -302,7 +325,7 @@ impl ReadProt for i64 {
 
 #[async_trait]
 impl WriteProt for i64 {
-    async fn write(&self, stream: &mut (impl Write + Unpin + Send)) -> Result<(), String> {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         let data = u64tou8abe(*self as u64);
         stream.write_all(&data).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(())
@@ -310,16 +333,68 @@ impl WriteProt for i64 {
 }
 
 impl SizedProt for i64 {
-    fn size(&self) -> usize {
+    fn prot_size(&self) -> usize {
         8
     }
 }
 
 
+
+#[async_trait]
+impl WriteProt for Vec<u8> {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        VarInt::from(self.len()).write(stream).await?;
+        stream.write_all(&self).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        Ok(())
+    }
+}
+
+// Reading a Vec<u8> assumes the length of the vec is announced as a VarInt in the stream just before the bytearray.
+#[async_trait]
+impl ReadProt for Vec<u8> {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+        let len = VarInt::read(stream).await?;
+        let len = len.value as usize;
+        let mut data = stream.take(len as u64);
+        let mut buf = vec![];
+        data.read_to_end(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        Ok(buf)
+    }
+}
+
+impl SizedProt for Vec<u8> {
+    fn prot_size(&self) -> usize {
+        VarInt::from(self.len()).prot_size() + self.len()
+    }
+}
+
+#[async_trait]
+impl<const N: usize> WriteProt for [u8; N] {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        stream.write_all(self).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<const N: usize> ReadProt for [u8; N] {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+        let mut buf = [0u8; N];
+        stream.read_exact(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        Ok(buf)
+    }
+}
+
+impl<const N: usize> SizedProt for [u8; N] {
+    fn prot_size(&self) -> usize {
+        N
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::protocol_types::{VarInt, VarLong, WriteProt};
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_0() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 0 }.write(&mut buf).await?;
@@ -327,7 +402,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_1() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 1 }.write(&mut buf).await?;
@@ -335,7 +410,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_2() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 2 }.write(&mut buf).await?;
@@ -343,7 +418,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_127() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 127 }.write(&mut buf).await?;
@@ -351,7 +426,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_128() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 128 }.write(&mut buf).await?;
@@ -360,7 +435,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_255() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 255 }.write(&mut buf).await?;
@@ -369,7 +444,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_25565() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 25565 }.write(&mut buf).await?;
@@ -379,7 +454,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_2097151() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 2097151 }.write(&mut buf).await?;
@@ -389,7 +464,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_2147483647() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: 2147483647 }.write(&mut buf).await?;
@@ -401,7 +476,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_n1() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: -1 }.write(&mut buf).await?;
@@ -413,7 +488,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varint_n2147483648() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         VarInt{ value: -2147483648 }.write(&mut buf).await?;
@@ -425,7 +500,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_0() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: 0 }).write(&mut buf).await?;
@@ -433,7 +508,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_1() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: 1 }).write(&mut buf).await?;
@@ -441,7 +516,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_2() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: 2 }).write(&mut buf).await?;
@@ -449,7 +524,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_127() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: 127 }).write(&mut buf).await?;
@@ -457,7 +532,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_128() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: 128 }).write(&mut buf).await?;
@@ -466,7 +541,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_255() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: 255 }).write(&mut buf).await?;
@@ -475,7 +550,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_2147483647() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: 2147483647 }).write(&mut buf).await?;
@@ -487,7 +562,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_9223372036854775807() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: 9223372036854775807 }).write(&mut buf).await?;
@@ -503,7 +578,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_n1() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: -1 }).write(&mut buf).await?;
@@ -520,7 +595,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_n2147483648() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: -2147483648 }).write(&mut buf).await?;
@@ -537,7 +612,7 @@ mod test {
         Ok(())
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn varlong_n9223372036854775808() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
         (VarLong{ value: -9223372036854775808 }).write(&mut buf).await?;
