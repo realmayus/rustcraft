@@ -4,6 +4,7 @@ pub(crate) enum ConnectionState {
     Handshake,
     Status,
     Login,
+    Configuration,
     Play
 }
 

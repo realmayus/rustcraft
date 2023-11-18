@@ -26,3 +26,12 @@ packet!(
         verify_token: Vec<u8>,
     }
 );
+
+packet!(
+    LoginSuccess 0x02 {
+        uuid1: u64,
+        uuid2: u64,
+        username: String,
+        num_properties: VarInt,
+    }
+);

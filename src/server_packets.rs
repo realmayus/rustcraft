@@ -19,7 +19,7 @@ use crate::protocol_types::{ReadProt, ServerPacket, SizedProt};
 use crate::protocol_types::VarInt;
 use crate::protocol_types::WriteProt;
 use crate::client_packets::*;
-
+use uuid::uuid;
 packet!(
     Handshake 0x00 {
         prot_version: VarInt,
@@ -66,8 +66,13 @@ packet!(
         info!("Player {} wants to login...", this.name);
         connection.player = this.name.clone();
         connection.verify_token = vec!(rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>());
-        let res = EncryptionReq::new("".into(), assets.pub_key.clone(), connection.verify_token.clone());
-        res.write(stream).await.or_else(|err| Err(format!("{err}")))
+        if assets.online {
+            let res = EncryptionReq::new("".into(), assets.pub_key.clone(), connection.verify_token.clone());
+            res.write(stream).await.or_else(|err| Err(format!("{err}")))
+        } else {
+            let res = LoginSuccess::new((uuid!("900bf5ae-3f2f-4594-8250-1871d6aec064").as_u128() >> 4*8) as u64, uuid!("900bf5ae-3f2f-4594-8250-1871d6aec064").as_u128() as u64, this.name.clone(), VarInt::from(0));
+            res.write(stream).await.or_else(|err| Err(format!("{err}")))
+        }
     }
 );
 
@@ -78,11 +83,38 @@ packet!(
     },
     handler |this, stream, connection, assets| {
         let mut verify_token_plain = vec![0; assets.key.size() as usize];
-        assets.key.private_decrypt(&this.verify_token, &mut verify_token_plain, Padding::PKCS1).or_else(|err| Err(format!("{err}")))?;
+        let num = assets.key.private_decrypt(&this.verify_token, &mut verify_token_plain, Padding::PKCS1).or_else(|err| Err(format!("{err}")))?;
+        let verify_token_plain = &verify_token_plain[0..num];
 
         let mut shared_secret_plain = vec![0; assets.key.size() as usize];
-        assets.key.private_decrypt(&this.shared_secret, &mut shared_secret_plain, Padding::PKCS1).or_else(|err| Err(format!("{err}")))?;
+        let num = assets.key.private_decrypt(&this.shared_secret, &mut shared_secret_plain, Padding::PKCS1).or_else(|err| Err(format!("{err}")))?;
+        let shared_secret_plain = &shared_secret_plain[0..num];
+
         encrypt(verify_token_plain, shared_secret_plain, assets, connection).await?;
+        Ok(())
+    }
+);
+
+packet!(
+    LoginAck 0x03 {},
+    handler |this, stream, connection, assets| {
+        connection.state = ConnectionState::Configuration;
+        Ok(())
+    }
+);
+
+packet!(
+    ClientInfo 0x00 {
+        locale: String,
+        view_distance: u8,
+        chat_mode: VarInt,
+        chat_colors: bool,
+        displayed_skin_parts: u8,
+        main_hand: VarInt,
+        enable_text_filtering: bool,
+        allow_server_listings: bool,
+    },
+    handler |_this, stream, connection, assets| {
         Ok(())
     }
 );

@@ -47,7 +47,7 @@ const MSG: &str = r#"
 }
 "#;
 const PORT: u16 = 25565;
-const ONLINE: bool = true;
+const ONLINE: bool = false;
 
 async fn skip(stream: &mut TcpStream, n: u64) -> Result<(), String> {
     // skip n bytes in the given stream
@@ -71,6 +71,8 @@ async fn parse_packet(stream: &mut TcpStream, connection: &Connection) -> Result
         },
         (0x01, ConnectionState::Status) => Box::new(server_packets::PingReq::read(stream).await?),
         (0x01, ConnectionState::Login) => Box::new(server_packets::EncryptionResponse::read(stream).await?),
+        (0x03, ConnectionState::Login) => Box::new(server_packets::LoginAck::read(stream).await?),
+        (0x00, ConnectionState::Configuration) => Box::new(server_packets::ClientInfo::read(stream).await?),
         _ => {
             // eat remainder of packet
             skip(stream, (length.value - id.prot_size() as i32) as u64).await?;

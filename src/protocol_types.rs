@@ -273,6 +273,53 @@ fn u16tou8abe(v: u16) -> [u8; 2] {
 }
 
 #[async_trait]
+impl ReadProt for u8 {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+        let mut buffer = [0; 1];
+        stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+
+        let value = buffer[0];
+        Ok(value)
+    }
+}
+
+#[async_trait]
+impl WriteProt for u8 {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        stream.write_all(&[*self]).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        Ok(())
+    }
+}
+
+impl SizedProt for u8 {
+    fn prot_size(&self) -> usize {
+        1
+    }
+}
+
+#[async_trait]
+impl ReadProt for bool {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+        Ok(u8::read(stream).await? == 0x01)
+    }
+}
+
+#[async_trait]
+impl WriteProt for bool {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        u8::write(&if *self { 0x01 } else { 0x00 }, stream).await.or_else(|x| Err(format!("IO error: {:?}", x)))?; // 0x01 = true, 0x00 = false
+        Ok(())
+    }
+}
+
+impl SizedProt for bool {
+    fn prot_size(&self) -> usize {
+        1
+    }
+}
+
+
+#[async_trait]
 impl ReadProt for u16 {
     async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
         let mut buffer = [0; 2];
@@ -333,6 +380,46 @@ impl WriteProt for i64 {
 }
 
 impl SizedProt for i64 {
+    fn prot_size(&self) -> usize {
+        8
+    }
+}
+
+#[async_trait]
+impl ReadProt for u64 {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+        let mut buffer = [0; 8];
+        stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        let mut value: u64 = buffer[0] as u64;
+        value <<= 8;
+        value |= buffer[1] as u64;
+        value <<= 8;
+        value |= buffer[2] as u64;
+        value <<= 8;
+        value |= buffer[3] as u64;
+        value <<= 8;
+        value |= buffer[4] as u64;
+        value <<= 8;
+        value |= buffer[5] as u64;
+        value <<= 8;
+        value |= buffer[6] as u64;
+        value <<= 8;
+        value |= buffer[7] as u64;
+
+        Ok(value as u64)
+    }
+}
+
+#[async_trait]
+impl WriteProt for u64 {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        let data = u64tou8abe(*self as u64);
+        stream.write_all(&data).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        Ok(())
+    }
+}
+
+impl SizedProt for u64 {
     fn prot_size(&self) -> usize {
         8
     }
