@@ -2,6 +2,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::tcp::{OwnedWriteHalf, WriteHalf};
 use tokio::net::TcpStream;
 use crate::Assets;
 use crate::connection::Connection;
@@ -80,7 +81,7 @@ pub(crate) trait SizedProt {
 pub(crate) trait ServerPacket: SizedProt + ReadProt + Debug + Display + Sync + Send {
     fn id() -> u8 where Self:Sized;
 
-    async fn handle(&self, stream: &mut TcpStream, connection: &mut Connection, assets: Arc<Assets>) -> Result<(), String>;
+    async fn handle(&self, stream: &mut OwnedWriteHalf, connection: &mut Connection, assets: Arc<Assets>) -> Result<(), String>;
 
 }
 

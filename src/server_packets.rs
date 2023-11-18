@@ -20,6 +20,8 @@ use crate::protocol_types::VarInt;
 use crate::protocol_types::WriteProt;
 use crate::client_packets::*;
 use uuid::uuid;
+use tokio::net::tcp::OwnedWriteHalf;
+
 packet!(
     Handshake 0x00 {
         prot_version: VarInt,
@@ -116,5 +118,26 @@ packet!(
     },
     handler |_this, stream, connection, assets| {
         Ok(())
+    }
+);
+
+packet!(
+    ConfigurationFinish 0x02 {},
+    handler |_this, stream, connection, assets| {
+        connection.state = ConnectionState::Play;
+        Ok(())
+    }
+);
+
+packet!(
+    ConfigurationKeepAlive 0x03 {
+        id: i64,
+    },
+    handler |this, stream, connection, assets| {
+        if (this.id != connection.keep_alive_id) {
+            Err(format!("Keep alive id mismatch: {} (received) != {} (expected)", this.id, connection.keep_alive_id))
+        } else {
+            Ok(())
+        }
     }
 );

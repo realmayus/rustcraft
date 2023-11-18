@@ -1,4 +1,5 @@
 use std::ascii::escape_default;
+use tokio::net::tcp::OwnedWriteHalf;
 
 // Visualize u8 slice in hex
 pub(crate) fn show(bs: &[u8]) -> String {
@@ -53,7 +54,7 @@ macro_rules! packet {
         });
         #[async_trait]
         impl ServerPacket for $packet_name {
-            async fn handle(&self, $stream: &mut TcpStream, $conn: &mut Connection,$assets: Arc<Assets>) -> Result<(), String> {
+            async fn handle(&self, $stream: &mut OwnedWriteHalf, $conn: &mut Connection,$assets: Arc<Assets>) -> Result<(), String> {
                 let $this = self;
                 $closure
             }

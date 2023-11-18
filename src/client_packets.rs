@@ -35,3 +35,9 @@ packet!(
         num_properties: VarInt,
     }
 );
+
+packet!(
+    ConfigurationKeepAlive 0x03 {
+        id: i64,
+    }
+);
