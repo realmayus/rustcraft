@@ -1,5 +1,4 @@
 use std::ascii::escape_default;
-use tokio::net::tcp::OwnedWriteHalf;
 
 // Visualize u8 slice in hex
 pub(crate) fn show(bs: &[u8]) -> String {

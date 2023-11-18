@@ -1,12 +1,14 @@
 use std::sync::Arc;
+
 use log::debug;
 use num_bigint::BigInt;
 use serde::Deserialize;
+use sha1::Digest;
+use sha1::digest::FixedOutputReset;
+use sha1::Sha1;
+
 use crate::Assets;
 use crate::connection::Connection;
-use sha1::Sha1;
-use sha1::Digest;
-use sha1::digest::{FixedOutput, FixedOutputReset};
 
 #[derive(Debug, Deserialize)]
 struct Response {

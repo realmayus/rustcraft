@@ -1,9 +1,10 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
+
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::tcp::{OwnedWriteHalf, WriteHalf};
-use tokio::net::TcpStream;
+use tokio::net::tcp::OwnedWriteHalf;
+
 use crate::Assets;
 use crate::connection::Connection;
 
@@ -482,6 +483,7 @@ impl<const N: usize> SizedProt for [u8; N] {
 #[cfg(test)]
 mod test {
     use crate::protocol_types::{VarInt, VarLong, WriteProt};
+
     #[tokio::test]
     async fn varint_0() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];

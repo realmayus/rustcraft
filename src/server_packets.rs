@@ -4,11 +4,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use log::debug;
+use log::info;
 use openssl::rsa::Padding;
 use tokio::io::AsyncRead;
-use tokio::net::TcpStream;
-use log::info;
+use tokio::net::tcp::OwnedWriteHalf;
+use uuid::uuid;
+
 use crate::Assets;
+use crate::client_packets::*;
 use crate::client_packets::StatusRes;
 use crate::connection::Connection;
 use crate::connection::ConnectionState;
@@ -18,9 +21,6 @@ use crate::packet_base;
 use crate::protocol_types::{ReadProt, ServerPacket, SizedProt};
 use crate::protocol_types::VarInt;
 use crate::protocol_types::WriteProt;
-use crate::client_packets::*;
-use uuid::uuid;
-use tokio::net::tcp::OwnedWriteHalf;
 
 packet!(
     Handshake 0x00 {
@@ -30,14 +30,14 @@ packet!(
         next_state: VarInt,
     },
     handler |this, stream, connection, _assets| {
-        connection.state = if this.next_state.value == 1 {
+        connection.set_state(if this.next_state.value == 1 {
             ConnectionState::Status
         } else if this.next_state.value == 2 {
             ConnectionState::Login
         } else {
             return Err(format!("Invalid next_state {}", this.next_state))
-        };
-        debug!("Connection state is now {:?}", connection.state);
+        });
+        debug!("Connection state is now {:?}", connection.state());
         Ok(())
     }
 );
@@ -100,7 +100,7 @@ packet!(
 packet!(
     LoginAck 0x03 {},
     handler |this, stream, connection, assets| {
-        connection.state = ConnectionState::Configuration;
+        connection.set_state(ConnectionState::Configuration);
         Ok(())
     }
 );
@@ -124,7 +124,7 @@ packet!(
 packet!(
     ConfigurationFinish 0x02 {},
     handler |_this, stream, connection, assets| {
-        connection.state = ConnectionState::Play;
+        connection.set_state(ConnectionState::Play);
         Ok(())
     }
 );

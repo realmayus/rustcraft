@@ -8,9 +8,9 @@ use log::{debug, error, info};
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use tokio::fs;
-use tokio::io::{AsyncReadExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::net::tcp::{WriteHalf, ReadHalf, OwnedReadHalf};
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::Mutex;
 
 use crate::connection::{Connection, ConnectionState};
@@ -65,15 +65,18 @@ async fn parse_packet(stream: &mut OwnedReadHalf, connection: &Connection) -> Re
 
     let packet: Box<dyn ServerPacket> = match (id.value, &connection.state()) {
         (0x00, Handshake) => Box::new(server_packets::Handshake::read(stream).await?),
+
         (0x00, ConnectionState::Status) => Box::new(server_packets::StatusReq::read(stream).await?),
+        (0x01, ConnectionState::Status) => Box::new(server_packets::PingReq::read(stream).await?),
+
         (0x00, ConnectionState::Login) => {
             let p = Box::new(server_packets::LoginStart::read(stream).await?);
             skip(stream, 16).await?;
             p
         },
-        (0x01, ConnectionState::Status) => Box::new(server_packets::PingReq::read(stream).await?),
         (0x01, ConnectionState::Login) => Box::new(server_packets::EncryptionResponse::read(stream).await?),
         (0x03, ConnectionState::Login) => Box::new(server_packets::LoginAck::read(stream).await?),
+
         (0x00, ConnectionState::Configuration) => Box::new(server_packets::ClientInfo::read(stream).await?),
         (0x02, ConnectionState::Configuration) => Box::new(server_packets::ConfigurationFinish::read(stream).await?),
         (0x03, ConnectionState::Configuration) => Box::new(server_packets::ConfigurationKeepAlive::read(stream).await?),
@@ -86,7 +89,7 @@ async fn parse_packet(stream: &mut OwnedReadHalf, connection: &Connection) -> Re
     Ok(packet)
 }
 
-async fn handle_connection(mut stream: TcpStream, assets: Arc<Assets>) {
+async fn handle_connection(stream: TcpStream, assets: Arc<Assets>) {
     info!("New connection: {}", stream.peer_addr().unwrap().ip());
     let (read_stream, write_stream) = stream.into_split();
     let read_stream = Arc::new(Mutex::new(read_stream));
@@ -99,8 +102,11 @@ async fn handle_connection(mut stream: TcpStream, assets: Arc<Assets>) {
     let heartbeat_connection = connection.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             let mut connection = heartbeat_connection.lock().await;
+            if connection.closed {
+                break;
+            }
             match connection.state() {
                 ConnectionState::Configuration => {
                     // set connection.keep_alive_id to a random number
@@ -121,18 +127,20 @@ async fn handle_connection(mut stream: TcpStream, assets: Arc<Assets>) {
     loop {
         let read_stream = &mut *main_stream_read.lock().await;
         let alive = read_stream.peek(&mut [0]).await;
+        let mut connection = main_connection.lock().await;
         match alive {
             Ok(0) => {
                 info!("Connection {} closed.", read_stream.peer_addr().map(|some| some.ip().to_string()).unwrap_or("{unknown}".into()));
+                connection.closed = true;
                 break;
             }
             Err(e) => {
                 error!("Error: {:?}", e);
+                connection.closed = true;
                 break;
             }
             _ => {}
         }
-        let mut connection = main_connection.lock().await;
         let packet = parse_packet(read_stream, &connection).await;
         match packet {
             Ok(p) => {
