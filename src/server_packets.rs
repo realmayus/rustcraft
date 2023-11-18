@@ -3,16 +3,13 @@ use core::fmt::Display;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use log::debug;
 use log::info;
 use openssl::rsa::Padding;
 use tokio::io::AsyncRead;
 use tokio::net::tcp::OwnedWriteHalf;
 use uuid::uuid;
 
-use crate::Assets;
-use crate::client_packets::*;
-use crate::client_packets::StatusRes;
+use crate::{Assets, client_packets};
 use crate::connection::Connection;
 use crate::connection::ConnectionState;
 use crate::encryption::encrypt;
@@ -37,7 +34,6 @@ packet!(
         } else {
             return Err(format!("Invalid next_state {}", this.next_state))
         });
-        debug!("Connection state is now {:?}", connection.state());
         Ok(())
     }
 );
@@ -45,7 +41,7 @@ packet!(
 packet!(
     StatusReq 0x00 {},
     handler |_this, stream, _connection, assets| {
-        let res = StatusRes::new(assets.motd.clone());
+        let res = client_packets::StatusRes::new(assets.motd.clone());
         return res.write(stream).await.or_else(|err| Err(format!("{err}")))
     }
 );
@@ -55,7 +51,7 @@ packet!(
         payload: i64,
     },
     handler |this, stream, connection, assets| {
-        let res = PingRes::new(this.payload);
+        let res = client_packets::PingRes::new(this.payload);
         res.write(stream).await.or_else(|err| Err(format!("{err}")))
     }
 );
@@ -69,10 +65,10 @@ packet!(
         connection.player = this.name.clone();
         connection.verify_token = vec!(rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>(), rand::random::<u8>());
         if assets.online {
-            let res = EncryptionReq::new("".into(), assets.pub_key.clone(), connection.verify_token.clone());
+            let res = client_packets::EncryptionReq::new("".into(), assets.pub_key.clone(), connection.verify_token.clone());
             res.write(stream).await.or_else(|err| Err(format!("{err}")))
         } else {
-            let res = LoginSuccess::new((uuid!("900bf5ae-3f2f-4594-8250-1871d6aec064").as_u128() >> 4*8) as u64, uuid!("900bf5ae-3f2f-4594-8250-1871d6aec064").as_u128() as u64, this.name.clone(), VarInt::from(0));
+            let res = client_packets::LoginSuccess::new((uuid!("900bf5ae-3f2f-4594-8250-1871d6aec064").as_u128() >> 4*8) as u64, uuid!("900bf5ae-3f2f-4594-8250-1871d6aec064").as_u128() as u64, this.name.clone(), VarInt::from(0));
             res.write(stream).await.or_else(|err| Err(format!("{err}")))
         }
     }
@@ -117,15 +113,31 @@ packet!(
         allow_server_listings: bool,
     },
     handler |_this, stream, connection, assets| {
-        Ok(())
+        let res = client_packets::ConfigurationFinish::new();
+        res.write(stream).await
     }
 );
+
+
+
 
 packet!(
     ConfigurationFinish 0x02 {},
     handler |_this, stream, connection, assets| {
         connection.set_state(ConnectionState::Play);
-        Ok(())
+        let res = client_packets::PlayLogin::new(0,
+            false,
+            vec!["minecraft:overworld".into(), "minecraft:the_nether".into(), "minecraft:the_end".into()],
+            VarInt::from(0),
+            VarInt::from(0),
+            VarInt::from(0),
+            false,
+            false,
+            false,
+            "minecraft:overworld".into(),
+            "minecraft:overworld".into(),
+            0, 0, 0, false, false, false, None, None, 0.into());
+        res.write(stream).await
     }
 );
 

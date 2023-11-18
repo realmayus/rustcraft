@@ -4,7 +4,7 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose;
 use dotenv::dotenv;
-use log::{debug, error, info};
+use log::{debug, error, info, trace};
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use tokio::fs;
@@ -160,7 +160,6 @@ async fn handle_connection(stream: TcpStream, assets: Arc<Assets>) {
 }
 
 struct Assets {
-    icon: String,
     key: Rsa<Private>,
     pub_key: Vec<u8>,
     online: bool,
@@ -173,7 +172,6 @@ async fn start_server() {
     let motd = String::from(MSG).replacen("§§§", &general_purpose::STANDARD.encode(icon.as_slice()), 1);
 
     let assets = Assets {
-        icon: general_purpose::STANDARD.encode(icon.as_slice()),
         pub_key: rsa.public_key_to_der().unwrap(),
         key: rsa,
         online: ONLINE,

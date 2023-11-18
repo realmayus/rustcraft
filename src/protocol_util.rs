@@ -18,12 +18,12 @@ trait Packet {
 #[macro_export]
 macro_rules! packet_base {
     ($packet_name:ident $id:literal {
-        $( $field:ident : $field_type:ty ),* $(,)*
+        $( $field:ident, $field_type:ty $(;; $cond:expr)? ),* $(,)*
     }) => {
         #[derive(Debug)]
         pub(crate) struct $packet_name {
             $(
-                $field : $field_type,
+                    $field: packet_base!(@field $field_type, $($cond)?), // Option<$field_type>
             )*
         }
 
@@ -40,16 +40,32 @@ macro_rules! packet_base {
             }
         }
     };
+    (@field $fty:ty, $cond:expr) => {
+        Option<$fty>
+    };
+    (@field $fty:ty $(,)?) => {
+        $fty
+    };
+    (@read $stream: ident, $fty:ty, $cond:expr) => {
+        if $cond {
+            Some(<$fty>::read($stream).await?)
+        } else {
+            None
+        }
+    };
+    (@read $stream: ident, $fty:ty $(,)?) => {
+        <$fty>::read($stream).await?
+    };
 }
 
 #[macro_export]
 macro_rules! packet {
     // handler provided: server-bound packet
     ($packet_name:ident $id:literal {
-        $( $field:ident : $field_type:ty ),* $(,)*
+        $( $field:ident : $({$cond:expr} && )? $field_type:ty ),* $(,)*
     }, handler |$this:ident, $stream:ident, $conn:ident, $assets:ident| $closure:expr) => {
         packet_base!($packet_name $id {
-            $( $field : $field_type ),*
+            $( $field , $field_type  $(;; $cond)? ),*
         });
         #[async_trait]
         impl ServerPacket for $packet_name {
@@ -67,7 +83,7 @@ macro_rules! packet {
             async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
                 Ok($packet_name {
                     $(
-                        $field: <$field_type>::read(stream).await?,
+                        $field: packet_base!(@read stream, $field_type, $($cond)?),
                     )*
                 })
             }
@@ -75,10 +91,10 @@ macro_rules! packet {
     };
     // no handler provided: client-bound packet
     ($packet_name:ident $id:literal {
-        $( $field:ident : $field_type:ty ),* $(,)*
+        $( $field:ident : $({$cond:expr} && )? $field_type:ty ),* $(,)*
     }) => {
         packet_base!($packet_name $id {
-            $( $field : $field_type ),*
+            $( $field, $field_type $(;; $cond)? ),*
         });
         #[async_trait]
         impl ClientPacket for $packet_name {
@@ -88,7 +104,7 @@ macro_rules! packet {
         }
 
         impl $packet_name {
-            pub(crate) fn new($($field : $field_type,)*) -> Self {
+            pub(crate) fn new($($field: packet_base!(@field $field_type, $($cond)?),)*) -> Self {
                 Self {
                     $(
                         $field,
