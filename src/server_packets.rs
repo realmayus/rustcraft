@@ -146,7 +146,7 @@ packet!(
         id: i64,
     },
     handler |this, stream, connection, assets| {
-        if (this.id != connection.keep_alive_id) {
+        if this.id != connection.keep_alive_id {
             Err(format!("Keep alive id mismatch: {} (received) != {} (expected)", this.id, connection.keep_alive_id))
         } else {
             Ok(())

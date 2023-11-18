@@ -69,6 +69,7 @@ macro_rules! packet {
         });
         #[async_trait]
         impl ServerPacket for $packet_name {
+            #[allow(unused)]
             async fn handle(&self, $stream: &mut OwnedWriteHalf, $conn: &mut Connection,$assets: Arc<Assets>) -> Result<(), String> {
                 let $this = self;
                 $closure
@@ -80,6 +81,7 @@ macro_rules! packet {
 
         #[async_trait]
         impl ReadProt for $packet_name {
+            #[allow(unused)]
             async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
                 Ok($packet_name {
                     $(
@@ -115,6 +117,7 @@ macro_rules! packet {
 
         #[async_trait]
         impl WriteProt for $packet_name {
+            #[allow(unused)]
             async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
                 debug!("Outbound packet: {self:?}");
                 VarInt::from(self.prot_size()).write(stream).await?;
