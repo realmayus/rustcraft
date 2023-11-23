@@ -1,49 +1,66 @@
 use std::fmt::{Debug, Display, Formatter};
-use std::sync::Arc;
 
 use async_trait::async_trait;
+use openssl::symm::Crypter;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::tcp::OwnedWriteHalf;
-
-use crate::Assets;
-use crate::connection::Connection;
+use crate::protocol_types::traits::{ReadProt, SizedProt, WriteProt};
 
 const SEGMENT_BITS: u8 = 0x7f;
 const CONTINUE_BIT: u8 = 0x80;
 
-#[async_trait]
-pub(crate) trait ReadProt {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized;
-}
-
-#[async_trait]
-pub(crate) trait WriteProt {
-    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String>;
-}
-
-pub(crate) trait SizedProt {
-    fn prot_size(&self) -> usize;
-}
-
-#[async_trait]
-pub(crate) trait ServerPacket: SizedProt + ReadProt + Debug + Display + Sync + Send {
-    fn id() -> u8 where Self: Sized;
-
-    async fn handle(&self, stream: &mut OwnedWriteHalf, connection: &mut Connection, assets: Arc<Assets>) -> Result<(), String>;
-}
-
-pub(crate) trait ClientPacket: SizedProt + WriteProt + Debug + Display {
-    fn id() -> u8;
-}
-
-#[derive(Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy)]
 pub(crate) struct VarInt {
     pub(crate) value: i32,
 }
 
+impl VarInt {
+    async fn get_byte(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<u8, String> {
+        let mut buf = vec![0u8; 1];
+        stream
+            .read_exact(&mut buf)
+            .await
+            .or_else(|x| Err(format!("Trying to read byte: {:?}", x)))?;
+        Ok(buf[0])
+    }
+
+    async fn get_byte_decrypt(
+        stream: &mut (impl AsyncRead + Unpin + Send),
+        crypter: &mut Crypter,
+    ) -> Result<u8, String> {
+        let mut temp = vec![0u8; 1];
+        let byte = Self::get_byte(stream).await?;
+        crypter
+            .update(&[byte], &mut temp)
+            .or_else(|x| Err(format!("Crypter error: {:?}", x)))?;
+        Ok(temp[0])
+    }
+
+    pub(crate) async fn read_decrypt(
+        stream: &mut (impl AsyncRead + Unpin + Send),
+        crypter: &mut Crypter,
+    ) -> Result<Self, String> {
+        let mut value: i32 = 0;
+        let mut pos: u32 = 0;
+        let mut current_byte: u8;
+        loop {
+            current_byte = Self::get_byte_decrypt(stream, crypter).await?;
+            value |= ((current_byte & SEGMENT_BITS) as i32) << pos;
+            if current_byte & CONTINUE_BIT == 0 {
+                return Ok(Self { value });
+            }
+            pos += 7;
+            if pos >= 32 {
+                return Err("VarInt is too big".into());
+            }
+        }
+    }
+}
+
 impl From<usize> for VarInt {
     fn from(value: usize) -> Self {
-        Self { value: value as i32 }
+        Self {
+            value: value as i32,
+        }
     }
 }
 
@@ -52,7 +69,6 @@ impl From<i32> for VarInt {
         Self { value }
     }
 }
-
 
 impl Display for VarInt {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -97,10 +113,15 @@ impl ReadProt for VarInt {
         let mut current_byte: u8;
         loop {
             let mut buf = vec![0u8; 1];
-            stream.read_exact(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+            stream
+                .read_exact(&mut buf)
+                .await
+                .or_else(|x| Err(format!("IO error: {:?}", x)))?;
             current_byte = buf[0];
             value |= ((current_byte & SEGMENT_BITS) as i32) << pos;
-            if current_byte & CONTINUE_BIT == 0 { return Ok(Self { value }); }
+            if current_byte & CONTINUE_BIT == 0 {
+                return Ok(Self { value });
+            }
             pos += 7;
             if pos >= 32 {
                 return Err("VarInt is too big".into());
@@ -135,7 +156,10 @@ impl WriteProt for VarInt {
                 temp |= 0b1000_0000;
             }
 
-            stream.write_all(&[temp]).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+            stream
+                .write_all(&[temp])
+                .await
+                .or_else(|x| Err(format!("IO error: {:?}", x)))?;
 
             if x == 0 {
                 break;
@@ -152,7 +176,10 @@ impl ReadProt for VarLong {
         let mut num_read = 0;
         loop {
             let mut buf = vec![0u8; 1];
-            stream.read_exact(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+            stream
+                .read_exact(&mut buf)
+                .await
+                .or_else(|x| Err(format!("IO error: {:?}", x)))?;
             let read = buf[0];
             let value = i64::from(read & 0b0111_1111);
             result |= value.overflowing_shl(7 * num_read).0;
@@ -198,7 +225,10 @@ impl WriteProt for VarLong {
                 temp |= 0b1000_0000;
             }
 
-            stream.write_all(&[temp]).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+            stream
+                .write_all(&[temp])
+                .await
+                .or_else(|x| Err(format!("IO error: {:?}", x)))?;
 
             if x == 0 {
                 break;
@@ -210,14 +240,21 @@ impl WriteProt for VarLong {
 
 #[async_trait]
 impl ReadProt for String {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         let len = VarInt::read(stream).await?;
         let len = len.value as u32;
-        if len > 32767 * 4 + 3 { return Err(format!("String too long: {} B", len)); }
+        if len > 32767 * 4 + 3 {
+            return Err(format!("String too long: {} B", len));
+        }
 
         let mut data = stream.take(len as u64);
         let mut buf = vec![];
-        data.read_to_end(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        data.read_to_end(&mut buf)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         let value = String::from_utf8(buf).or_else(|x| Err(format!("UTF8 error: {:?}", x)))?;
         Ok(value)
     }
@@ -226,7 +263,11 @@ impl ReadProt for String {
 #[async_trait]
 impl WriteProt for String {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
-        (VarInt { value: self.len() as i32 }).write(stream).await?;
+        (VarInt {
+            value: self.len() as i32,
+        })
+        .write(stream)
+        .await?;
         stream.write_all(self.as_bytes()).await.unwrap();
         Ok(())
     }
@@ -254,27 +295,25 @@ fn u64tou8abe(v: u64) -> [u8; 8] {
 
 #[inline]
 fn u32tou8abe(v: u32) -> [u8; 4] {
-    [
-        (v >> 24) as u8,
-        (v >> 16) as u8,
-        (v >> 8) as u8,
-        v as u8,
-    ]
+    [(v >> 24) as u8, (v >> 16) as u8, (v >> 8) as u8, v as u8]
 }
 
 #[inline]
 fn u16tou8abe(v: u16) -> [u8; 2] {
-    [
-        (v >> 8) as u8,
-        v as u8,
-    ]
+    [(v >> 8) as u8, v as u8]
 }
 
 #[async_trait]
 impl ReadProt for i32 {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         let mut buffer = [0; 4];
-        stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .read_exact(&mut buffer)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         let mut value: u32 = buffer[0] as u32;
         value <<= 8;
         value |= buffer[1] as u32;
@@ -291,10 +330,14 @@ impl ReadProt for i32 {
 impl WriteProt for i32 {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         let data = u32tou8abe(*self as u32);
-        stream.write_all(&data).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .write_all(&data)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(())
     }
 }
+
 impl SizedProt for i32 {
     fn prot_size(&self) -> usize {
         4
@@ -303,9 +346,15 @@ impl SizedProt for i32 {
 
 #[async_trait]
 impl ReadProt for u8 {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         let mut buffer = [0; 1];
-        stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .read_exact(&mut buffer)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
 
         let value = buffer[0];
         Ok(value)
@@ -315,7 +364,10 @@ impl ReadProt for u8 {
 #[async_trait]
 impl WriteProt for u8 {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
-        stream.write_all(&[*self]).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .write_all(&[*self])
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(())
     }
 }
@@ -328,7 +380,10 @@ impl SizedProt for u8 {
 
 #[async_trait]
 impl ReadProt for bool {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         Ok(u8::read(stream).await? == 0x01)
     }
 }
@@ -336,7 +391,9 @@ impl ReadProt for bool {
 #[async_trait]
 impl WriteProt for bool {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
-        u8::write(&if *self { 0x01 } else { 0x00 }, stream).await.or_else(|x| Err(format!("IO error: {:?}", x)))?; // 0x01 = true, 0x00 = false
+        u8::write(&if *self { 0x01 } else { 0x00 }, stream)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?; // 0x01 = true, 0x00 = false
         Ok(())
     }
 }
@@ -347,12 +404,17 @@ impl SizedProt for bool {
     }
 }
 
-
 #[async_trait]
 impl ReadProt for u16 {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         let mut buffer = [0; 2];
-        stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .read_exact(&mut buffer)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
 
         let value = ((buffer[0] as u16) << 8) | buffer[1] as u16;
         Ok(value)
@@ -363,7 +425,10 @@ impl ReadProt for u16 {
 impl WriteProt for u16 {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         let data = u16tou8abe(*self);
-        stream.write_all(&data).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .write_all(&data)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(())
     }
 }
@@ -376,9 +441,15 @@ impl SizedProt for u16 {
 
 #[async_trait]
 impl ReadProt for i64 {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         let mut buffer = [0; 8];
-        stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .read_exact(&mut buffer)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         let mut value: u64 = buffer[0] as u64;
         value <<= 8;
         value |= buffer[1] as u64;
@@ -403,7 +474,10 @@ impl ReadProt for i64 {
 impl WriteProt for i64 {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         let data = u64tou8abe(*self as u64);
-        stream.write_all(&data).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .write_all(&data)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(())
     }
 }
@@ -416,9 +490,15 @@ impl SizedProt for i64 {
 
 #[async_trait]
 impl ReadProt for u64 {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         let mut buffer = [0; 8];
-        stream.read_exact(&mut buffer).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .read_exact(&mut buffer)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         let mut value: u64 = buffer[0] as u64;
         value <<= 8;
         value |= buffer[1] as u64;
@@ -443,7 +523,10 @@ impl ReadProt for u64 {
 impl WriteProt for u64 {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         let data = u64tou8abe(*self as u64);
-        stream.write_all(&data).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .write_all(&data)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(())
     }
 }
@@ -454,41 +537,89 @@ impl SizedProt for u64 {
     }
 }
 
-
-// #[async_trait]
-// impl WriteProt for Vec<u8> {
-//     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
-//         VarInt::from(self.len()).write(stream).await?;
-//         stream.write_all(&self).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
-//         Ok(())
-//     }
-// }
-//
-// // Reading a Vec<u8> assumes the length of the vec is announced as a VarInt in the stream just before the bytearray.
-// #[async_trait]
-// impl ReadProt for Vec<u8> {
-//     async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
-//         let len = VarInt::read(stream).await?;
-//         let len = len.value as usize;
-//         let mut data = stream.take(len as u64);
-//         let mut buf = vec![];
-//         data.read_to_end(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
-//         Ok(buf)
-//     }
-// }
-//
-// impl SizedProt for Vec<u8> {
-//     fn prot_size(&self) -> usize {
-//         VarInt::from(self.len()).prot_size() + self.len()
-//     }
-// }
-
+#[async_trait]
+impl WriteProt for f32 {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        stream
+            .write_f32(*self)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))
+    }
+}
 
 #[async_trait]
-impl<T> WriteProt for Vec<T> where T: WriteProt + Sync {
+impl ReadProt for f32 {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
+        stream
+            .read_f32()
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))
+    }
+}
+
+impl SizedProt for f32 {
+    fn prot_size(&self) -> usize {
+        4
+    }
+}
+
+#[async_trait]
+impl WriteProt for f64 {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
-        VarInt::from(self.len()).write(stream).await?;
-        for item in self {
+        stream
+            .write_f64(*self)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))
+    }
+}
+
+#[async_trait]
+impl ReadProt for f64 {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
+        stream
+            .read_f64()
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))
+    }
+}
+
+impl SizedProt for f64 {
+    fn prot_size(&self) -> usize {
+        8
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SizedVec<T>
+where
+    T: Send + Sync,
+{
+    pub(crate) vec: Vec<T>,
+}
+
+impl<T> From<Vec<T>> for SizedVec<T>
+where
+    T: Send + Sync,
+{
+    fn from(value: Vec<T>) -> Self {
+        Self { vec: value }
+    }
+}
+
+#[async_trait]
+impl<T> WriteProt for SizedVec<T>
+where
+    T: WriteProt + Sync + Send,
+{
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        VarInt::from(self.vec.len()).write(stream).await?;
+        for item in &self.vec {
             item.write(stream).await?;
         }
         Ok(())
@@ -497,42 +628,61 @@ impl<T> WriteProt for Vec<T> where T: WriteProt + Sync {
 
 // Reading a Vec<u8> assumes the length of the vec is announced as a VarInt in the stream just before the bytearray.
 #[async_trait]
-impl<T> ReadProt for Vec<T> where T: ReadProt + Sync + SizedProt + Send {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+impl<T> ReadProt for SizedVec<T>
+where
+    T: ReadProt + Sync + SizedProt + Send,
+{
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         let len = VarInt::read(stream).await?;
         let len = len.value as usize;
         let mut bytes_so_far = 0;
         let mut buf = vec![];
         loop {
-            if bytes_so_far == len { break }
+            if bytes_so_far == len {
+                break;
+            }
             buf.push(T::read(stream).await?);
             bytes_so_far += buf.last().unwrap().prot_size();
         }
-        Ok(buf)
+        Ok(Self { vec: buf })
     }
 }
 
-impl<T> SizedProt for Vec<T> {
+impl<T> SizedProt for SizedVec<T>
+where
+    T: SizedProt + Send + Sync,
+{
     fn prot_size(&self) -> usize {
-        VarInt::from(self.len()).prot_size() + self.len()
+        VarInt::from(self.vec.len()).prot_size()
+            + self.vec.iter().map(|x| x.prot_size()).sum::<usize>()
     }
 }
-
-
 
 #[async_trait]
 impl<const N: usize> WriteProt for [u8; N] {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
-        stream.write_all(self).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .write_all(self)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(())
     }
 }
 
 #[async_trait]
 impl<const N: usize> ReadProt for [u8; N] {
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
+    where
+        Self: Sized,
+    {
         let mut buf = [0u8; N];
-        stream.read_exact(&mut buf).await.or_else(|x| Err(format!("IO error: {:?}", x)))?;
+        stream
+            .read_exact(&mut buf)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))?;
         Ok(buf)
     }
 }
@@ -543,52 +693,23 @@ impl<const N: usize> SizedProt for [u8; N] {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct Position {
-    x: i32,  // actual size: 26 bits
-    z: i32,  // actual size: 26 bits
-    y: i32,  // actual size: 12 bits
-}
-
-#[async_trait]
-impl WriteProt for Position {
-    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
-        let int = (((self.x & 0x3FFFFFF) as i64) << 38) | (((self.z & 0x3FFFFFF) as i64) << 12) | (self.y as i64 & 0xFFF);
-        int.write(stream).await
-    }
-}
-
-#[async_trait]
-
-impl ReadProt for Position {
-
-    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
-        let int = i64::read(stream).await?;
-        Ok(Self {
-            x: (int >> 38) as i32,
-            z: (int << 26 >> 38) as i32,
-            y: (int << 52 >> 52) as i32,
-        })
-    }
-}
-
-impl SizedProt for Position {
-    fn prot_size(&self) -> usize {
-        8
-    }
-}
-
-impl<T> SizedProt for Option<T> where T: SizedProt {
+impl<T> SizedProt for Option<T>
+where
+    T: SizedProt,
+{
     fn prot_size(&self) -> usize {
         match self {
             Some(x) => x.prot_size(),
-            None => 0
+            None => 0,
         }
     }
 }
 
 #[async_trait]
-impl<T> WriteProt for Option<T> where T: WriteProt + Sync {
+impl<T> WriteProt for Option<T>
+where
+    T: WriteProt + Sync,
+{
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         match self {
             Some(x) => {
@@ -602,7 +723,7 @@ impl<T> WriteProt for Option<T> where T: WriteProt + Sync {
 
 #[cfg(test)]
 mod test {
-    use crate::protocol_types::{VarInt, VarLong, WriteProt};
+    use super::{VarInt, VarLong, WriteProt};
 
     #[tokio::test]
     async fn varint_0() -> Result<(), String> {
@@ -775,7 +896,11 @@ mod test {
     #[tokio::test]
     async fn varlong_9223372036854775807() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
-        (VarLong { value: 9223372036854775807 }).write(&mut buf).await?;
+        (VarLong {
+            value: 9223372036854775807,
+        })
+        .write(&mut buf)
+        .await?;
         assert_eq!(buf[0], 255);
         assert_eq!(buf[1], 255);
         assert_eq!(buf[2], 255);
@@ -825,7 +950,11 @@ mod test {
     #[tokio::test]
     async fn varlong_n9223372036854775808() -> Result<(), String> {
         let mut buf: Vec<u8> = vec![];
-        (VarLong { value: -9223372036854775808 }).write(&mut buf).await?;
+        (VarLong {
+            value: -9223372036854775808,
+        })
+        .write(&mut buf)
+        .await?;
         assert_eq!(buf[0], 128);
         assert_eq!(buf[1], 128);
         assert_eq!(buf[2], 128);
