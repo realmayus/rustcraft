@@ -478,7 +478,6 @@ pub(crate) struct Tag {
     types: SizedVec<VarInt>, // numeric IDs of the given type (block, item, etc.)
 }
 
-
 #[derive(ReadProt, WriteProt, SizedProt, Debug)]
 pub(crate) struct BitSet(pub(crate) SizedVec<i64>);
 impl BitSet {

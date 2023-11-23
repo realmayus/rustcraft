@@ -1,4 +1,4 @@
-use crate::protocol_types::compound::{Position, TagGroup, Recipe, BitSet, BlockEntity};
+use crate::protocol_types::compound::{BitSet, BlockEntity, Position, Recipe, TagGroup};
 use crate::protocol_types::primitives::SizedVec;
 use core::fmt::Debug;
 use core::fmt::Display;
@@ -142,7 +142,6 @@ packet!(
         angle: f32,
     }
 );
-
 
 #[derive(WriteProtPacket)]
 pub(crate) enum ClientPackets {

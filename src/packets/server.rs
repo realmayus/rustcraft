@@ -10,7 +10,6 @@ use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
-use crate::Assets;
 use crate::connection::Connection;
 use crate::connection::ConnectionState;
 use crate::encryption::encrypt;
@@ -25,6 +24,7 @@ use crate::protocol_types::primitives::SizedVec;
 use crate::protocol_types::primitives::VarInt;
 use crate::protocol_types::traits::{ReadProt, ReadProtPacket, ServerPacket, SizedProt};
 use crate::protocol_util::name_uuid;
+use crate::Assets;
 
 packet!(
     Handshake 0x00 {
