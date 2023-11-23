@@ -345,6 +345,27 @@ impl SizedProt for i32 {
 }
 
 #[async_trait]
+impl ReadProt for i16 {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+        stream.read_i16().await.or_else(|x| Err(format!("IO error: {:?}", x)))
+    }
+}
+
+#[async_trait]
+impl WriteProt for i16 {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        stream.write_i16(*self).await.or_else(|x| Err(format!("IO error: {:?}", x)))
+    }
+}
+
+#[async_trait]
+impl SizedProt for i16 {
+    fn prot_size(&self) -> usize {
+        2
+    }
+}
+
+#[async_trait]
 impl ReadProt for u8 {
     async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
     where

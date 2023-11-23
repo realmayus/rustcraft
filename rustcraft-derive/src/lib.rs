@@ -23,6 +23,19 @@ pub fn derive_sized_prot(input: TokenStream) -> TokenStream {
                     }
                 }
             ));
+        } else if let Fields::Unnamed(ref fields) = data.fields {
+            let field_vals = fields.unnamed.iter().enumerate().map(|(i, field)| {
+                let member = syn::Index::from(i);
+                quote!(self.#member.prot_size())
+            });
+            let name = input.ident;
+            return TokenStream::from(quote!(
+                impl crate::protocol_types::traits::SizedProt for #name {
+                    fn prot_size(&self) -> usize {
+                         0 #(+ #field_vals)*
+                    }
+                }
+            ));
         }
     }
 
@@ -93,6 +106,21 @@ pub fn derive_write_prot(input: TokenStream) -> TokenStream {
                     }
                 }
             ));
+        } else if let Fields::Unnamed(ref fields) = data.fields {
+            let field_vals = fields.unnamed.iter().enumerate().map(|(i, field)| {
+                let member = syn::Index::from(i);
+                quote!(self.#member.write(stream).await?;)
+            });
+            let name = input.ident;
+            return TokenStream::from(quote!(
+                #[async_trait]
+                impl crate::protocol_types::traits::WriteProt for #name {
+                    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+                        #(#field_vals)*
+                        Ok(())
+                    }
+                }
+            ));
         }
     }
 
@@ -126,6 +154,22 @@ pub fn derive_read_prot(input: TokenStream) -> TokenStream {
                         Ok( #name {
                                 #(#field_vals)*
                         })
+                    }
+                }
+            ));
+        } else if let Fields::Unnamed(ref fields) = data.fields {
+            let field_vals = fields.unnamed.iter().enumerate().map(|(i, field)| {
+                let ty = &field.ty;
+                quote!(<#ty>::read(stream).await?,)
+            });
+            let name = input.ident;
+            return TokenStream::from(quote!(
+                #[async_trait]
+                impl crate::protocol_types::traits::ReadProt for #name {
+                    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+                        Ok( #name (
+                                #(#field_vals)*
+                        ))
                     }
                 }
             ));

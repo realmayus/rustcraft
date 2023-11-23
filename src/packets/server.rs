@@ -1,14 +1,16 @@
 use core::fmt::Debug;
 use core::fmt::Display;
 use std::sync::Arc;
-use uuid::Uuid;
 
+use async_nbt::NbtCompound;
 use async_trait::async_trait;
 use log::{debug, info};
 use openssl::rsa::Padding;
 use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
+use uuid::Uuid;
 
+use crate::Assets;
 use crate::connection::Connection;
 use crate::connection::ConnectionState;
 use crate::encryption::encrypt;
@@ -18,11 +20,11 @@ use crate::packet;
 use crate::packet_base;
 use crate::packets::client;
 use crate::packets::client::ClientPackets;
+use crate::protocol_types::compound::{BitSet, Position};
 use crate::protocol_types::primitives::SizedVec;
 use crate::protocol_types::primitives::VarInt;
 use crate::protocol_types::traits::{ReadProt, ReadProtPacket, ServerPacket, SizedProt};
 use crate::protocol_util::name_uuid;
-use crate::Assets;
 
 packet!(
     Handshake 0x00 {
@@ -189,9 +191,10 @@ packet!(
     handler |_this, stream, connection, assets| {
         let p1 = client::SetHeldItem::new(0);
         let p2 = client::UpdateRecipes::new(vec![].into());
+        connection.teleport_id = rand::random::<usize>().into();
         let p3 = client::SynchronizePlayerPosition::new(
             0.0, 0.0, 0.0, 0.0, 0.0, 0u8,
-            rand::random::<usize>().into(),
+            connection.teleport_id.clone(),
         );
         Ok(vec![ClientPackets::SetHeldItem(p1), ClientPackets::UpdateRecipes(p2), ClientPackets::SynchronizePlayerPosition(p3)])
     }
@@ -229,7 +232,11 @@ packet!(
     },
     handler |this, stream, connection, assets| {
         if connection.teleport_id == this.teleport_id {
-            Ok(vec![])
+            let p1 = client::ChunkDataAndUpdateLight::new(
+                0, 0, NbtCompound::new(), vec![].into(), vec![].into(), BitSet(vec![].into()), BitSet(vec![].into()), BitSet(vec![].into()), BitSet(vec![].into()), vec![].into(), vec![].into()
+            );
+            let p2 = client::SetDefaultSpawnPosition::new(Position {x:0, y:0, z:0}, 0.0);
+            Ok(vec![ClientPackets::ChunkDataAndUpdateLight(p1), ClientPackets::SetDefaultSpawnPosition(p2)])
         } else {
             Err(TeleportIdMismatch(connection.teleport_id, this.teleport_id))
         }

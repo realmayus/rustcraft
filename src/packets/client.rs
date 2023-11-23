@@ -1,5 +1,4 @@
-use crate::protocol_types::compound::Recipe;
-use crate::protocol_types::compound::{Position, TagGroup};
+use crate::protocol_types::compound::{Position, TagGroup, Recipe, BitSet, BlockEntity};
 use crate::protocol_types::primitives::SizedVec;
 use core::fmt::Debug;
 use core::fmt::Display;
@@ -121,6 +120,30 @@ packet!(
     }
 );
 
+packet!(
+    ChunkDataAndUpdateLight 0x25 {
+        chunk_x: i32,
+        chunk_z: i32,
+        heightmaps: NbtCompound,
+        data: SizedVec<u8>,
+        block_entities: SizedVec<BlockEntity>,
+        sky_light_mask: BitSet,
+        block_light_mask: BitSet,
+        empty_sky_light_mask: BitSet,
+        empty_block_light_mask: BitSet,
+        sky_lights: SizedVec<SizedVec<u8>>,
+        block_lights: SizedVec<SizedVec<u8>>,
+    }
+);
+
+packet!(
+    SetDefaultSpawnPosition 0x52 {
+        location: Position,
+        angle: f32,
+    }
+);
+
+
 #[derive(WriteProtPacket)]
 pub(crate) enum ClientPackets {
     StatusRes(StatusRes),
@@ -136,4 +159,6 @@ pub(crate) enum ClientPackets {
     UpdateRecipes(UpdateRecipes),
     UpdateTags(UpdateTags),
     SynchronizePlayerPosition(SynchronizePlayerPosition),
+    ChunkDataAndUpdateLight(ChunkDataAndUpdateLight),
+    SetDefaultSpawnPosition(SetDefaultSpawnPosition),
 }

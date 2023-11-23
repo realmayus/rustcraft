@@ -43,11 +43,11 @@ impl SizedProt for Uuid {
 
 #[derive(Debug)]
 pub(crate) struct Position {
-    x: i32,
+    pub(crate) x: i32,
     // actual size: 26 bits
-    z: i32,
+    pub(crate) z: i32,
     // actual size: 26 bits
-    y: i32, // actual size: 12 bits
+    pub(crate) y: i32, // actual size: 12 bits
 }
 
 #[async_trait]
@@ -476,4 +476,30 @@ pub(crate) struct TagGroup {
 pub(crate) struct Tag {
     name: String,
     types: SizedVec<VarInt>, // numeric IDs of the given type (block, item, etc.)
+}
+
+
+#[derive(ReadProt, WriteProt, SizedProt, Debug)]
+pub(crate) struct BitSet(pub(crate) SizedVec<i64>);
+impl BitSet {
+    pub(crate) fn bit(&self, n: usize) -> bool {
+        self.0.vec[n / 64] & (1i64 << (n % 64)) != 0
+    }
+
+    // untested
+    pub(crate) fn set_bit(&mut self, n: usize, value: bool) {
+        if value {
+            self.0.vec[n / 64] |= 1i64 << (n % 64);
+        } else {
+            self.0.vec[n / 64] &= !(1i64 << (n % 64));
+        }
+    }
+}
+
+#[derive(SizedProt, ReadProt, WriteProt, Debug)]
+pub(crate) struct BlockEntity {
+    xz: u8,
+    y: i16,
+    typ: VarInt,
+    data: NbtCompound,
 }
