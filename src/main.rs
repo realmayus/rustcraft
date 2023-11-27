@@ -8,11 +8,12 @@ use openssl::rsa::Rsa;
 mod connection;
 mod encryption;
 mod err;
-mod nbt;
 mod packets;
 mod protocol_types;
 mod protocol_util;
 mod serve;
+mod chunk;
+mod data;
 
 const MSG: &str = r#"
 {

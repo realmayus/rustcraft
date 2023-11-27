@@ -1,5 +1,4 @@
 use crate::connection::{Connection, ConnectionState};
-use crate::nbt::load_registry;
 use crate::packets::client::ClientPackets;
 use crate::packets::{client, parse};
 use crate::protocol_types::traits::WriteProtPacket;
@@ -14,6 +13,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use crate::data::registry::load_registry;
 
 async fn handle_connection(mut stream: TcpStream, assets: Arc<Assets>) {
     info!("New connection: {}", stream.peer_addr().unwrap().ip());

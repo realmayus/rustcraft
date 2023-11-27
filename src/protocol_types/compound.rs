@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::fmt::Display;
 use async_nbt::io::Flavor;
 use async_nbt::NbtCompound;
 use async_trait::async_trait;
@@ -41,13 +43,19 @@ impl SizedProt for Uuid {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Position {
     pub(crate) x: i32,
     // actual size: 26 bits
     pub(crate) z: i32,
     // actual size: 26 bits
     pub(crate) y: i32, // actual size: 12 bits
+}
+
+impl Position {
+    pub(crate) fn new(x: i32, y: i32, z: i32) -> Self {
+        Self { x, y, z }
+    }
 }
 
 #[async_trait]
@@ -502,3 +510,5 @@ pub(crate) struct BlockEntity {
     typ: VarInt,
     data: NbtCompound,
 }
+
+

@@ -1,12 +1,14 @@
 use crate::protocol_types::primitives::VarInt;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
+use crate::protocol_types::compound::Position;
 
 #[derive(Debug)]
 pub(crate) enum ProtError {
     InvalidNextState(VarInt),
     KeepAliveIdMismatch(i64, i64),
     TeleportIdMismatch(VarInt, VarInt),
+    PositionOutOfBounds(Position),
     Any(String),
 }
 
@@ -16,6 +18,7 @@ impl ProtError {
             ProtError::InvalidNextState(_) => true,
             ProtError::KeepAliveIdMismatch(_, _) => true,
             ProtError::TeleportIdMismatch(_, _) => true,
+            ProtError::PositionOutOfBounds(_) => true,
             ProtError::Any(_) => true,
         }
     }
@@ -31,6 +34,7 @@ impl Display for ProtError {
             ProtError::TeleportIdMismatch(v1, v2) => {
                 write!(f, "Teleport id mismatch: {} != {}", v1, v2)
             }
+            ProtError::PositionOutOfBounds(v) => write!(f, "Position out of bounds: {:?}", v),
             ProtError::Any(v) => write!(f, "{}", v),
         }
     }
