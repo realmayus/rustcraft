@@ -1,9 +1,12 @@
 use std::fmt::{Debug, Display, Formatter};
+use std::sync::{Arc, RwLock};
 
-use crate::protocol_types::traits::{ReadProt, SizedProt, WriteProt};
 use async_trait::async_trait;
-use openssl::symm::Crypter;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::tcp::OwnedReadHalf;
+
+use crate::connection::ConnectionInfo;
+use crate::protocol_types::traits::{ReadProt, SizedProt, WriteProt};
 
 const SEGMENT_BITS: u8 = 0x7f;
 const CONTINUE_BIT: u8 = 0x80;
@@ -24,11 +27,13 @@ impl VarInt {
     }
 
     async fn get_byte_decrypt(
-        stream: &mut (impl AsyncRead + Unpin + Send),
-        crypter: &mut Crypter,
+        stream: &mut OwnedReadHalf,
+        crypter: Arc<RwLock<ConnectionInfo>>,
     ) -> Result<u8, String> {
         let mut temp = vec![0u8; 1];
         let byte = Self::get_byte(stream).await?;
+        let mut crypter = crypter.write().unwrap();
+        let crypter = crypter.decrypter.as_mut().unwrap();
         crypter
             .update(&[byte], &mut temp)
             .or_else(|x| Err(format!("Crypter error: {:?}", x)))?;
@@ -36,14 +41,14 @@ impl VarInt {
     }
 
     pub(crate) async fn read_decrypt(
-        stream: &mut (impl AsyncRead + Unpin + Send),
-        crypter: &mut Crypter,
+        stream: &mut OwnedReadHalf,
+        crypter: Arc<RwLock<ConnectionInfo>>,
     ) -> Result<Self, String> {
         let mut value: i32 = 0;
         let mut pos: u32 = 0;
         let mut current_byte: u8;
         loop {
-            current_byte = Self::get_byte_decrypt(stream, crypter).await?;
+            current_byte = Self::get_byte_decrypt(stream, crypter.clone()).await?;
             value |= ((current_byte & SEGMENT_BITS) as i32) << pos;
             if current_byte & CONTINUE_BIT == 0 {
                 return Ok(Self { value });
@@ -58,6 +63,14 @@ impl VarInt {
 
 impl From<usize> for VarInt {
     fn from(value: usize) -> Self {
+        Self {
+            value: value as i32,
+        }
+    }
+}
+
+impl From<u32> for VarInt {
+    fn from(value: u32) -> Self {
         Self {
             value: value as i32,
         }
@@ -82,7 +95,7 @@ impl Debug for VarInt {
     }
 }
 
-#[derive(Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Ord, PartialOrd, Eq, PartialEq, Clone)]
 pub(crate) struct VarLong {
     value: i64,
 }
@@ -341,6 +354,16 @@ impl WriteProt for i32 {
 impl SizedProt for i32 {
     fn prot_size(&self) -> usize {
         4
+    }
+}
+
+#[async_trait]
+impl WriteProt for u32 {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        stream
+            .write_u32(*self)
+            .await
+            .or_else(|x| Err(format!("IO error: {:?}", x)))
     }
 }
 
@@ -625,12 +648,28 @@ impl SizedProt for f64 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone)]
 pub(crate) struct SizedVec<T>
 where
     T: Send + Sync,
 {
     pub(crate) vec: Vec<T>,
+}
+
+impl<T> Debug for SizedVec<T>
+where
+    T: Send + Sync + Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.vec.len() > 30 {
+            write!(f, "SizedVec(len={})", self.vec.len())?;
+        } else {
+            write!(f, "SizedVec(len={}, data=", self.vec.len())?;
+            write!(f, "{:?}", self.vec)?;
+            write!(f, ")")?;
+        }
+        Ok(())
+    }
 }
 
 impl<T> From<Vec<T>> for SizedVec<T>

@@ -1,105 +1,265 @@
-use crate::connection::{Connection, ConnectionState};
-use crate::packets::client::ClientPackets;
-use crate::packets::{client, parse};
-use crate::protocol_types::traits::WriteProtPacket;
-use crate::{Assets, MSG, ONLINE, PORT};
-use base64::engine::general_purpose;
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
+
 use base64::Engine;
+use base64::engine::general_purpose;
 use log::{debug, error, info};
 use openssl::rsa::Rsa;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc::{Receiver, Sender};
+use rustcraft_lib::web::dto;
+
+use crate::{Assets, MSG, ONLINE, PORT, web};
+use crate::connection::{ConnectionInfo, ConnectionState};
 use crate::data::registry::load_registry;
+use crate::err::ProtError;
+use crate::packets::{client, parse};
+use crate::packets::client::ClientPackets;
+use crate::protocol_types::traits::WriteProtPacket;
+use crate::serve::ConnectionActorMessage::{PlayerInfo, SendPacket};
 
-async fn handle_connection(mut stream: TcpStream, assets: Arc<Assets>) {
-    info!("New connection: {}", stream.peer_addr().unwrap().ip());
-    let (tx, mut rx) = mpsc::channel::<ClientPackets>(32); // write queue for packets
-    let connection = Connection::new();
-    let connection = Arc::new(Mutex::new(connection));
-
-    // scheduler for keepalive packets
-    let heartbeat_connection = connection.clone();
-    let heartbeat_tx = tx.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-            let mut connection = heartbeat_connection.lock().await;
-            if connection.closed {
-                break;
-            }
-            // set connection.keep_alive_id to a random number
-            connection.keep_alive_id = rand::random::<i64>();
-
-            match connection.state() {
-                ConnectionState::Configuration => {
-                    let packet = client::ConfigurationKeepAlive::new(*&connection.keep_alive_id);
-                    heartbeat_tx
-                        .send(ClientPackets::ConfigurationKeepAlive(packet))
-                        .await
-                        .unwrap();
-                }
-                ConnectionState::Play => {
-                    let packet = client::PlayKeepAlive::new(*&connection.keep_alive_id);
-                    heartbeat_tx
-                        .send(ClientPackets::PlayKeepAlive(packet))
-                        .await
-                        .unwrap();
-                }
-                _ => break,
-            }
-        }
-    });
-    let main_connection = connection.clone();
-    loop {
-        let alive = stream.peek(&mut [0]).await;
-        let mut connection = main_connection.lock().await;
-        match alive {
-            Ok(0) => {
-                info!(
-                    "Connection {} closed.",
-                    stream
-                        .peer_addr()
-                        .map(|some| some.ip().to_string())
-                        .unwrap_or("{unknown}".into())
-                );
-                connection.closed = true;
-                break;
-            }
-            Err(e) => {
-                error!("Error: {:?}", e);
-                connection.closed = true;
-                break;
-            }
-            _ => {}
-        }
-        let packet = parse::parse_packet(&mut stream, &mut connection).await;
+async fn accept_packet(
+    read: &mut OwnedReadHalf,
+    connection: Arc<RwLock<ConnectionInfo>>,
+    assets: Arc<Assets>,
+    sender: Sender<ConnectionActorMessage>,
+) -> Result<(), ProtError> {
+    let result = {
+        let packet = parse::parse_packet(read, connection.clone()).await;
         match packet {
             Ok(p) => {
-                debug!("Inbound packet: {p:?}");
-                let res = p.handle(&mut stream, &mut connection, assets.clone()).await;
-                if let Ok(ps) = res {
-                    for packet in ps {
-                        tx.send(packet).await.unwrap();
-                    }
-                } else if let Err(e) = res {
-                    error!("Couldn't handle packet {:?} {e}", p);
-                    if e.is_fatal() {
-                        connection.closed = true;
-                        break;
-                    }
-                }
+                debug!("{} Inbound packet: {p:?}", read.peer_addr().unwrap());
+                let res = p.handle(connection.clone(), assets.clone()).await;
+                res
             }
-            Err(err) => error!("Couldn't parse packet: {err}"),
+            Err(err) => {
+                error!("Couldn't parse packet: {err}");
+                return Err(ProtError::Any(err));
+            }
         }
-        while let Ok(to_send) = rx.try_recv() {
-            to_send.write(&mut stream, &mut connection).await.unwrap();
+    };
+
+    if let Ok(ps) = result {
+        for packet in ps {
+            sender.send(SendPacket(packet)).await.unwrap();
+        }
+    } else if let Err(e) = result {
+        error!("Couldn't handle packet {e}");
+        return Err(e);
+    }
+    Ok(())
+}
+
+/**
+ * The connection actor is responsible for handling all packets for a single connection.
+ * It is spawned for every new connection and runs in its own task.
+ * The connection actor has three tasks:
+ * - The message handler, which handles messages sent over the internal channel. It exclusively manages the WriteHalf of the TcpStream.
+ * - The packet handler, which reads packets from the TCP stream, parses them, and handles them.
+ * - The heartbeat handler, which sends keepalive packets over the internal channel.
+*/
+struct ConnectionActor {
+    receiver: Receiver<ConnectionActorMessage>,
+    connection: Arc<RwLock<ConnectionInfo>>,
+}
+
+impl ConnectionActor {
+    fn new(receiver: Receiver<ConnectionActorMessage>) -> Self {
+        Self {
+            receiver,
+            connection: Arc::new(RwLock::new(ConnectionInfo::new())),
         }
     }
-    stream.shutdown().await.unwrap();
+
+    async fn run(
+        &mut self,
+        read: OwnedReadHalf,
+        write: OwnedWriteHalf,
+        sender: Sender<ConnectionActorMessage>,
+        assets: Arc<Assets>,
+    ) {
+        let connection = self.connection.clone();
+        let assets = assets.clone();
+        let sender_clone = sender.clone();
+        tokio::spawn(
+            async move { run_packet_handler(connection, read, sender_clone, assets).await },
+        );
+        let connection = self.connection.clone();
+        tokio::spawn(async move { run_heartbeat(connection, sender).await });
+        self.run_msg_handler(write).await;
+    }
+
+    /**
+     * Runs the internal channel message handler.
+     * Primarily, messages sent over this channel tell the handler task to send packets over the TCP connection.
+     * Another use case is the web interface requesting player information from the connection object.
+     */
+    async fn run_msg_handler(&mut self, mut write: OwnedWriteHalf) {
+        while let Some(msg) = self.receiver.recv().await {
+            let result = self.handle(msg, &mut write).await;
+            if let Err(e) = result {
+                if e.is_fatal() {
+                    self.connection.write().unwrap().close();
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn handle(
+        &mut self,
+        msg: ConnectionActorMessage,
+        write: &mut OwnedWriteHalf,
+    ) -> Result<(), ProtError> {
+        match msg {
+            SendPacket(packet) => {
+                packet
+                    .write(write, self.connection.clone())
+                    .await
+                    .or_else(|err| Err(ProtError::Any(err)))?;
+            },
+            PlayerInfo(sender) => {
+                let player = {
+                    let connection = self.connection.read().unwrap();
+                    dto::Player {
+                        username: connection.username.clone(),
+                        uuid: "".to_string(),
+                        position: dto::Position {
+                            x: connection.position.x,
+                            y: connection.position.y,
+                            z: connection.position.z,
+                            pitch: connection.position.pitch,
+                            yaw: connection.position.yaw,
+                            on_ground: connection.position.on_ground,
+                        },
+                    }
+                };
+                sender.send(player).unwrap();
+            }
+        }
+        Ok(())
+    }
+}
+
+/**
+ * Runs the minecraft packet handler for the connection actor.
+ * Packets are read from the TCP stream, parsed, and handled. In case handling involves response packets,
+ * these are sent over the message channel for the message handler to send them over the TCP stream.
+ */
+async fn run_packet_handler(
+    connection: Arc<RwLock<ConnectionInfo>>,
+    mut read: OwnedReadHalf,
+    sender: Sender<ConnectionActorMessage>,
+    assets: Arc<Assets>,
+) {
+    let address = read.peer_addr().unwrap();
+    loop {
+        let connection = connection.clone();
+        {
+            if connection.read().unwrap().closed() {
+                break;
+            }
+            let alive = read.peek(&mut [0]).await;
+            match alive {
+                Ok(0) => {
+                    info!("Connection {:?} closed.", address);
+                    connection.write().unwrap().close();
+                    break;
+                }
+                Err(e) => {
+                    error!("Error: {:?}", e);
+                    connection.write().unwrap().close();
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let result = accept_packet(
+            &mut read,
+            connection.clone(),
+            assets.clone(),
+            sender.clone(),
+        )
+        .await;
+
+        if let Err(e) = result {
+            if e.is_fatal() {
+                connection.write().unwrap().close();
+                break;
+            }
+        }
+    }
+}
+
+/**
+ * Runs the heartbeat handler for the connection actor.
+ * This sends keepalive packets over the message channel to the message handler, which then sends them over the TCP stream.
+ */
+async fn run_heartbeat(
+    connection: Arc<RwLock<ConnectionInfo>>,
+    sender: Sender<ConnectionActorMessage>,
+) {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        if connection.read().unwrap().closed() {
+            break;
+        }
+        let keep_alive_id = rand::random::<i64>();
+        let state = {
+            let mut connection = connection.write();
+            let connection = connection.as_mut().unwrap();
+            connection.keep_alive_id = keep_alive_id;
+            connection.state().clone()
+        };
+        match state {
+            ConnectionState::Configuration => {
+                let packet = client::ConfigurationKeepAlive::new(keep_alive_id);
+                sender
+                    .send(SendPacket(ClientPackets::ConfigurationKeepAlive(packet)))
+                    .await
+                    .unwrap();
+            }
+            ConnectionState::Play => {
+                let packet = client::PlayKeepAlive::new(keep_alive_id);
+                sender
+                    .send(SendPacket(ClientPackets::PlayKeepAlive(packet)))
+                    .await
+                    .unwrap();
+            }
+            _ => break,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ConnectionActorHandle {
+    sender: Sender<ConnectionActorMessage>,
+}
+
+impl ConnectionActorHandle {
+    pub fn new(stream: TcpStream, assets: Arc<Assets>) -> Self {
+        let (sender, receiver) = mpsc::channel(8);
+        let (read, write) = stream.into_split();
+        let mut actor = ConnectionActor::new(receiver);
+        let sender_clone = sender.clone();
+        tokio::spawn(async move {
+            actor.run(read, write, sender_clone, assets).await;
+        });
+
+        Self { sender }
+    }
+
+    pub async fn send(&self, msg: ConnectionActorMessage) {
+        self.sender.send(msg).await.unwrap();
+    }
+}
+
+pub(crate) enum ConnectionActorMessage {
+    SendPacket(ClientPackets),
+    PlayerInfo(oneshot::Sender<dto::Player>)
 }
 
 pub(crate) async fn start_server() {
@@ -121,12 +281,20 @@ pub(crate) async fn start_server() {
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], PORT)))
         .await
         .unwrap();
+
+    // We need an async RwLock here due to axum's state management
+    let connection_handles: Arc<tokio::sync::RwLock<Vec<ConnectionActorHandle>>> = Arc::new(tokio::sync::RwLock::new(vec![]));
+    let connection_handles_clone = connection_handles.clone();
+    tokio::spawn(async move {
+        web::serve::init(connection_handles_clone).await;
+    });
+
     // For every incoming connection on the listener, we spawn a new task with a reference to the assets (possibly an arc or sth else), and the stream
     loop {
-        let (stream, _addr) = listener.accept().await.unwrap();
+        let (stream, addr) = listener.accept().await.unwrap();
+        println!("New accept: {:?}", addr);
         let assets = assets.clone();
-        tokio::spawn(async move {
-            handle_connection(stream, assets).await;
-        });
+        let handle = ConnectionActorHandle::new(stream, assets);
+        connection_handles.write().await.push(handle);
     }
 }

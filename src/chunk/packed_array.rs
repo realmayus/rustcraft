@@ -1,12 +1,33 @@
 // Taken from https://github.com/feather-rs/feather/blob/main/feather/base/src/chunk/packed_array.rs (Apache 2.0 license)
 
+use crate::protocol_types::primitives::VarInt;
+use crate::protocol_types::traits::WriteProt;
+use async_trait::async_trait;
+use std::fmt::{Debug, Formatter};
+use tokio::io::AsyncWrite;
+
 /// A packed array of integers where each integer consumes
 /// `n` bits. Used to store block data in chunks.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PackedArray {
     length: usize,
     bits_per_value: usize,
     bits: Vec<u64>,
+}
+
+impl Debug for PackedArray {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let data = self
+            .iter()
+            .map(|x| format!("{:0width$b}", x, width = self.bits_per_value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        f.debug_struct("PackedArray")
+            .field("length", &self.length)
+            .field("bits_per_value", &self.bits_per_value)
+            .field("bits", &data)
+            .finish()
+    }
 }
 
 impl PackedArray {
@@ -198,5 +219,16 @@ impl PackedArray {
         let bit_index = (index % self.values_per_u64()) * self.bits_per_value;
 
         (u64_index, bit_index)
+    }
+}
+
+#[async_trait]
+impl WriteProt for PackedArray {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        VarInt::from(self.length).write(stream).await?;
+        for i in 0..self.bits.len() {
+            self.bits[i].write(stream).await?;
+        }
+        Ok(())
     }
 }

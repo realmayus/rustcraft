@@ -1,3 +1,7 @@
 /target
 world
 rustcraft-derive/target
+rustcraft-web/target
+rustcraft-web/dist
+rustcraft-lib/target
+.idea

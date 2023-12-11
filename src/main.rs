@@ -5,15 +5,16 @@ use log::info;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 
+mod chunk;
 mod connection;
+mod data;
 mod encryption;
 mod err;
 mod packets;
 mod protocol_types;
 mod protocol_util;
 mod serve;
-mod chunk;
-mod data;
+pub mod web;
 
 const MSG: &str = r#"
 {

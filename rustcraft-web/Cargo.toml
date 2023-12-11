@@ -1,0 +1,14 @@
+[package]
+name = "rustcraft-web"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+yew = { git = "https://github.com/yewstack/yew/", features = ["csr"] }
+rustcraft-lib = { path = "../rustcraft-lib" }
+gloo-net = "0.5.0"
+wasm-bindgen-futures = "0.4.39"
+wasm-bindgen = { version = "0.2.89" }
+web-sys = { version = "0.3.66", features = ["EventTarget", "HtmlInputElement"]}

@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-use std::fmt::Display;
 use async_nbt::io::Flavor;
 use async_nbt::NbtCompound;
 use async_trait::async_trait;
+use serde_json::Map;
 use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
 
@@ -118,14 +117,14 @@ impl SizedProt for NbtCompound {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Recipe {
     typ: String,
     id: String,
     data: RecipeKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RecipeKind {
     CraftingShapeless {
         group: String,
@@ -435,7 +434,7 @@ impl SizedProt for Recipe {
 
 type RecipeIngredient = SizedVec<Slot>;
 
-#[derive(SizedProt, WriteProt, Debug)]
+#[derive(SizedProt, WriteProt, Debug, Clone)]
 struct Slot {
     present: bool,
     item_id: Option<VarInt>,
@@ -474,19 +473,19 @@ impl ReadProt for Slot {
     }
 }
 
-#[derive(SizedProt, WriteProt, ReadProt, Debug)]
+#[derive(SizedProt, WriteProt, ReadProt, Debug, Clone)]
 pub(crate) struct TagGroup {
     typ: String, // minecraft:block, minecraft:item, minecraft:fluid, minecraft:entity_type, and minecraft:game_event
     tags: SizedVec<Tag>,
 }
 
-#[derive(SizedProt, WriteProt, ReadProt, Debug)]
+#[derive(SizedProt, WriteProt, ReadProt, Debug, Clone)]
 pub(crate) struct Tag {
     name: String,
     types: SizedVec<VarInt>, // numeric IDs of the given type (block, item, etc.)
 }
 
-#[derive(ReadProt, WriteProt, SizedProt, Debug)]
+#[derive(ReadProt, WriteProt, SizedProt, Debug, Clone)]
 pub(crate) struct BitSet(pub(crate) SizedVec<i64>);
 impl BitSet {
     pub(crate) fn bit(&self, n: usize) -> bool {
@@ -503,7 +502,7 @@ impl BitSet {
     }
 }
 
-#[derive(SizedProt, ReadProt, WriteProt, Debug)]
+#[derive(SizedProt, ReadProt, WriteProt, Debug, Clone)]
 pub(crate) struct BlockEntity {
     xz: u8,
     y: i16,
@@ -511,4 +510,92 @@ pub(crate) struct BlockEntity {
     data: NbtCompound,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct Chat {
+    map: Map<String, serde_json::Value>,
+}
+impl Chat {
+    pub(crate) fn new_text(text: String) -> Self {
+        let mut map = serde_json::map::Map::new();
+        map.insert("text".into(), serde_json::Value::String(text));
+        Self { map }
+    }
 
+    pub(crate) fn with_extra(mut self, new_extra: Chat) -> Self {
+        if self.map.contains_key("extra") {
+            let extra = self.map.get_mut("extra").unwrap();
+            if let serde_json::Value::Array(arr) = extra {
+                arr.push(serde_json::Value::Object(new_extra.map));
+            }
+        } else {
+            self.map.insert(
+                "extra".into(),
+                serde_json::Value::Array(vec![serde_json::Value::Object(new_extra.map)]),
+            );
+        }
+        self
+    }
+
+    pub(crate) fn with_bold(mut self, bold: bool) -> Self {
+        self.map
+            .insert("bold".into(), serde_json::Value::Bool(bold));
+        self
+    }
+
+    pub(crate) fn with_italic(mut self, italic: bool) -> Self {
+        self.map
+            .insert("italic".into(), serde_json::Value::Bool(italic));
+        self
+    }
+
+    pub(crate) fn with_underlined(mut self, underlined: bool) -> Self {
+        self.map
+            .insert("underlined".into(), serde_json::Value::Bool(underlined));
+        self
+    }
+
+    pub(crate) fn with_strikethrough(mut self, strikethrough: bool) -> Self {
+        self.map.insert(
+            "strikethrough".into(),
+            serde_json::Value::Bool(strikethrough),
+        );
+        self
+    }
+
+    pub(crate) fn with_obfuscated(mut self, obfuscated: bool) -> Self {
+        self.map
+            .insert("obfuscated".into(), serde_json::Value::Bool(obfuscated));
+        self
+    }
+
+    pub(crate) fn with_color(mut self, color: String) -> Self {
+        self.map
+            .insert("color".into(), serde_json::Value::String(color));
+        self
+    }
+}
+
+#[async_trait]
+impl ReadProt for Chat {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> {
+        let json = String::read(stream).await?;
+        let map = serde_json::from_str(&json).unwrap();
+        Ok(Self { map })
+    }
+}
+
+#[async_trait]
+impl WriteProt for Chat {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        let json = serde_json::to_string(&serde_json::Value::Object(self.map.clone())).unwrap();
+        json.write(stream).await?;
+        Ok(())
+    }
+}
+
+impl SizedProt for Chat {
+    fn prot_size(&self) -> usize {
+        let json = serde_json::to_string(&serde_json::Value::Object(self.map.clone())).unwrap();
+        json.prot_size()
+    }
+}

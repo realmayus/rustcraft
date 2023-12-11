@@ -1,12 +1,11 @@
-use crate::connection::Connection;
+use crate::connection::ConnectionInfo;
 use crate::err::ProtError;
 use crate::packets::client::ClientPackets;
 use crate::Assets;
 use async_trait::async_trait;
 use std::fmt::{Debug, Display};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
 
 #[async_trait]
 pub(crate) trait ServerPacket:
@@ -18,8 +17,7 @@ pub(crate) trait ServerPacket:
 
     async fn handle(
         &self,
-        stream: &mut TcpStream,
-        connection: &mut Connection,
+        connection: Arc<RwLock<ConnectionInfo>>,
         assets: Arc<Assets>,
     ) -> Result<Vec<ClientPackets>, ProtError>;
 }
@@ -39,10 +37,7 @@ pub(crate) trait ReadProt {
 
 #[async_trait]
 pub(crate) trait ReadProtPacket {
-    async fn read(
-        stream: &mut (impl AsyncRead + Unpin + Send),
-        connection: &mut Connection,
-    ) -> Result<Self, String>
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String>
     where
         Self: Sized;
 }
@@ -57,7 +52,7 @@ pub(crate) trait WriteProtPacket {
     async fn write(
         &self,
         stream: &mut (impl AsyncWrite + Unpin + Send),
-        connection: &mut Connection,
+        connection: Arc<RwLock<ConnectionInfo>>,
     ) -> Result<(), String>;
 }
 

@@ -10,7 +10,7 @@ pub fn derive_sized_prot(input: TokenStream) -> TokenStream {
 
     if let syn::Data::Struct(ref data) = input.data {
         if let Fields::Named(ref fields) = data.fields {
-            let field_vals = fields.named.iter().enumerate().map(|(i, field)| {
+            let field_vals = fields.named.iter().enumerate().map(|(_, field)| {
                 let name = &field.ident;
                 quote!(self.#name.prot_size())
             });
@@ -24,7 +24,7 @@ pub fn derive_sized_prot(input: TokenStream) -> TokenStream {
                 }
             ));
         } else if let Fields::Unnamed(ref fields) = data.fields {
-            let field_vals = fields.unnamed.iter().enumerate().map(|(i, field)| {
+            let field_vals = fields.unnamed.iter().enumerate().map(|(i, _)| {
                 let member = syn::Index::from(i);
                 quote!(self.#member.prot_size())
             });
@@ -65,7 +65,7 @@ pub fn derive_write_prot_packet(input: TokenStream) -> TokenStream {
                 async fn write(
                         &self,
                         stream: &mut (impl AsyncWrite + Unpin + Send),
-                        connection: &mut Connection,
+                        connection: Arc<RwLock<Connection>>,
                     ) -> Result<(), String> {
                     match self {
                         #(#match_arms)*
@@ -92,7 +92,7 @@ pub fn derive_write_prot(input: TokenStream) -> TokenStream {
 
     if let syn::Data::Struct(ref data) = input.data {
         if let Fields::Named(ref fields) = data.fields {
-            let field_vals = fields.named.iter().enumerate().map(|(i, field)| {
+            let field_vals = fields.named.iter().enumerate().map(|(_, field)| {
                 let name = &field.ident;
                 quote!(self.#name.write(stream).await?;)
             });
@@ -107,7 +107,7 @@ pub fn derive_write_prot(input: TokenStream) -> TokenStream {
                 }
             ));
         } else if let Fields::Unnamed(ref fields) = data.fields {
-            let field_vals = fields.unnamed.iter().enumerate().map(|(i, field)| {
+            let field_vals = fields.unnamed.iter().enumerate().map(|(i, _)| {
                 let member = syn::Index::from(i);
                 quote!(self.#member.write(stream).await?;)
             });
@@ -141,7 +141,7 @@ pub fn derive_read_prot(input: TokenStream) -> TokenStream {
 
     if let syn::Data::Struct(ref data) = input.data {
         if let Fields::Named(ref fields) = data.fields {
-            let field_vals = fields.named.iter().enumerate().map(|(i, field)| {
+            let field_vals = fields.named.iter().enumerate().map(|(_, field)| {
                 let name = &field.ident;
                 let ty = &field.ty;
                 quote!(#name: <#ty>::read(stream).await?,)
@@ -158,7 +158,7 @@ pub fn derive_read_prot(input: TokenStream) -> TokenStream {
                 }
             ));
         } else if let Fields::Unnamed(ref fields) = data.fields {
-            let field_vals = fields.unnamed.iter().enumerate().map(|(i, field)| {
+            let field_vals = fields.unnamed.iter().enumerate().map(|(_, field)| {
                 let ty = &field.ty;
                 quote!(<#ty>::read(stream).await?,)
             });

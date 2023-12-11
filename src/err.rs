@@ -1,11 +1,12 @@
+use crate::protocol_types::compound::Position;
 use crate::protocol_types::primitives::VarInt;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
-use crate::protocol_types::compound::Position;
 
 #[derive(Debug)]
 pub(crate) enum ProtError {
     InvalidNextState(VarInt),
+    ChannelClosed,
     KeepAliveIdMismatch(i64, i64),
     TeleportIdMismatch(VarInt, VarInt),
     PositionOutOfBounds(Position),
@@ -19,7 +20,8 @@ impl ProtError {
             ProtError::KeepAliveIdMismatch(_, _) => true,
             ProtError::TeleportIdMismatch(_, _) => true,
             ProtError::PositionOutOfBounds(_) => true,
-            ProtError::Any(_) => true,
+            ProtError::ChannelClosed => true,
+            ProtError::Any(_) => false,
         }
     }
 }
@@ -35,6 +37,7 @@ impl Display for ProtError {
                 write!(f, "Teleport id mismatch: {} != {}", v1, v2)
             }
             ProtError::PositionOutOfBounds(v) => write!(f, "Position out of bounds: {:?}", v),
+            ProtError::ChannelClosed => write!(f, "Channel closed"),
             ProtError::Any(v) => write!(f, "{}", v),
         }
     }

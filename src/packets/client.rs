@@ -1,19 +1,20 @@
-use crate::protocol_types::compound::{BitSet, BlockEntity, Position, Recipe, TagGroup};
+use crate::connection::ConnectionInfo;
+use crate::protocol_types::compound::{BitSet, BlockEntity, Chat, Position, Recipe, TagGroup};
 use crate::protocol_types::primitives::SizedVec;
-use core::fmt::Debug;
-use core::fmt::Display;
-use uuid::Uuid;
-
-use crate::connection::Connection;
 use crate::protocol_types::primitives::VarInt;
 use crate::protocol_types::traits::{ClientPacket, SizedProt, WriteProt, WriteProtPacket};
 use crate::{packet, packet_base};
 use async_nbt::NbtCompound;
 use async_trait::async_trait;
+use core::fmt::Debug;
+use core::fmt::Display;
 use log::debug;
 use rustcraft_derive::WriteProtPacket;
+use std::sync::Arc;
+use std::sync::RwLock;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
 
 packet!(
     StatusRes 0x00 {
@@ -137,13 +138,30 @@ packet!(
 );
 
 packet!(
+    SetCenterChunk 0x50 {
+        x: VarInt,
+        y: VarInt,
+    }
+);
+
+packet!(
     SetDefaultSpawnPosition 0x52 {
         location: Position,
         angle: f32,
     }
 );
 
-#[derive(WriteProtPacket)]
+packet!(
+    DisguisedChatMessage 0x1c {
+        message: Chat,
+        chat_type: VarInt,
+        sender_name: Chat,
+        has_target_name: bool,
+        target_name: {has_target_name == true} && Chat,
+    }
+);
+
+#[derive(WriteProtPacket, Clone)]
 pub(crate) enum ClientPackets {
     StatusRes(StatusRes),
     PingRes(PingRes),
@@ -160,4 +178,6 @@ pub(crate) enum ClientPackets {
     SynchronizePlayerPosition(SynchronizePlayerPosition),
     ChunkDataAndUpdateLight(ChunkDataAndUpdateLight),
     SetDefaultSpawnPosition(SetDefaultSpawnPosition),
+    SetCenterChunk(SetCenterChunk),
+    DisguisedChatMessage(DisguisedChatMessage),
 }

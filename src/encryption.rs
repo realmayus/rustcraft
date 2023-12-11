@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use crate::Assets;
 use log::debug;
 use num_bigint::BigInt;
 use serde::Deserialize;
-use sha1::digest::FixedOutputReset;
 use sha1::Digest;
+use sha1::digest::FixedOutputReset;
 use sha1::Sha1;
 use uuid::Uuid;
 
-use crate::connection::Connection;
+use crate::Assets;
 
 #[derive(Debug, Deserialize)]
 struct Response {
@@ -40,10 +39,10 @@ async fn authenticate_session(username: String, server_id: String) -> Result<Uui
 pub(crate) async fn encrypt(
     shared_secret_plain: &[u8],
     assets: Arc<Assets>,
-    connection: &mut Connection,
+    username: String,
 ) -> Result<Uuid, String> {
     let hash = compute_server_hash(assets.clone(), shared_secret_plain);
-    let uuid = authenticate_session(connection.username.clone(), hash).await?;
+    let uuid = authenticate_session(username, hash).await?;
     debug!("UUID: {:?}", uuid);
     Ok(uuid)
 }

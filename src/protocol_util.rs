@@ -44,7 +44,7 @@ macro_rules! packet_base {
     ($packet_name:ident $id:literal {
         $( $field:ident, $field_type:ty $(;; $cond:expr)? ),* $(,)*
     }) => {
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         pub(crate) struct $packet_name {
             $(
                     $field: packet_base!(@field $field_type, $($cond)?), // Option<$field_type>
@@ -87,14 +87,14 @@ macro_rules! packet {
     // handler provided: server-bound packet
     ($packet_name:ident $id:literal {
         $( $field:ident : $({$cond:expr} && )? $field_type:ty ),* $(,)*
-    }, handler |$this:ident, $stream:ident, $conn:ident, $assets:ident| $closure:expr) => {
+    }, handler |$this:ident, /*$stream:ident,*/ $conn:ident, $assets:ident| $closure:expr) => {
         packet_base!($packet_name $id {
             $( $field , $field_type  $(;; $cond)? ),*
         });
         #[async_trait]
         impl ServerPacket for $packet_name {
             #[allow(unused)]
-            async fn handle(&self, $stream: &mut TcpStream, $conn: &mut Connection,$assets: Arc<Assets>) -> Result<Vec<ClientPackets>, ProtError> {
+            async fn handle(&self, /*$stream: &mut TcpStream,*/ $conn: Arc<RwLock<Connection>>,$assets: Arc<Assets>) -> Result<Vec<ClientPackets>, ProtError> {
                 let $this = self;
                 $closure
             }
@@ -106,7 +106,7 @@ macro_rules! packet {
         #[async_trait]
         impl ReadProtPacket for $packet_name {
             #[allow(unused)]
-            async fn read(stream: &mut (impl AsyncRead + Unpin + Send), connection: &mut Connection) -> Result<Self, String> where Self: Sized {
+            async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
                 Ok($packet_name {
                     $(
                         $field: packet_base!(@read stream, $field_type, $($cond)?),
@@ -142,7 +142,7 @@ macro_rules! packet {
         #[async_trait]
         impl WriteProtPacket for $packet_name {
             #[allow(unused)]
-            async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send), connection: &mut Connection) -> Result<(), String> {
+            async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send), connection: Arc<RwLock<Connection>>) -> Result<(), String> {
                 debug!("Outbound packet: {self:?} (len {})", self.prot_size() + VarInt::from(self.prot_size()).prot_size());
                 let mut buf: Vec<u8> = Vec::with_capacity(self.prot_size() + VarInt::from(self.prot_size()).prot_size());
                 VarInt::from(self.prot_size()).write(&mut buf).await?;
@@ -151,9 +151,14 @@ macro_rules! packet {
                     self.$field.write(&mut buf).await?;
                 )*
                 // encrypt `buf` with AES/CFB8 using `shared_secret` as the key.
-                if let Some(encrypter) = &mut connection.encrypter {
+                let is_encrypted = connection.read().unwrap().encrypter.is_some();
+                if is_encrypted {
                     let mut encrypted_buf = vec![0u8; buf.len()];
-                    encrypter.update(buf.as_slice(), &mut encrypted_buf).unwrap();
+                    {
+                        let mut encrypter = connection.write().unwrap();
+                        let encrypter = encrypter.encrypter.as_mut().unwrap();
+                        encrypter.update(buf.as_slice(), &mut encrypted_buf).unwrap();
+                    }
                     stream.write_all(&encrypted_buf).await.or_else(|err| Err(format!("{err}")))?;
                 } else {
                     stream.write_all(&buf).await.or_else(|err| Err(format!("{err}")))?;
