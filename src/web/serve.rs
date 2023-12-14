@@ -2,14 +2,17 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{http::StatusCode, Json, response::IntoResponse, Router, routing::get};
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderValue, Method};
+use axum::routing::put;
 use log::info;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use rustcraft_lib::web::dto::Player;
+use crate::packets::client::{ClientPackets, DisguisedChatMessage};
+use crate::protocol_types::compound::Chat;
 
 use crate::serve::ConnectionActorHandle;
 use crate::serve::ConnectionActorMessage;
@@ -25,7 +28,7 @@ pub(crate) async fn init(connections: Arc<tokio::sync::RwLock<Vec<ConnectionActo
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
         .route("/players", get(players))
-        // .route("/chat", put(send_chat_message))
+        .route("/chat", put(send_chat_message))
         .with_state(connections)
         .layer(cors);
 
@@ -55,25 +58,21 @@ struct SendChatQuery {
     text: String,
 }
 
-// async fn send_chat_message(
-//     State(connections): State<Arc<ConnectionManager>>,
-//     query: Query<SendChatQuery>,
-// ) -> impl IntoResponse {
-//     println!("Sending chat message: {}", query.text);
-//     for connection in connections.iter() {
-//         connections
-//             .send(
-//                 connection.key(),
-//                 ClientPackets::DisguisedChatMessage(DisguisedChatMessage::new(
-//                     Chat::new_text(query.text.clone()),
-//                     0.into(),
-//                     Chat::new_text("Server".into()),
-//                     false,
-//                     None,
-//                 )),
-//             )
-//             .await
-//             .unwrap();
-//     }
-//     (StatusCode::OK, Json(()))
-// }
+async fn send_chat_message(
+    State(connections): State<Arc<tokio::sync::RwLock<Vec<ConnectionActorHandle>>>>,
+    query: Query<SendChatQuery>,
+) -> impl IntoResponse {
+    let connections = connections.read().await;
+    for connection in connections.iter() {
+        connection.send(ConnectionActorMessage::SendPacket(
+            ClientPackets::DisguisedChatMessage(DisguisedChatMessage::new(
+                Chat::new_text(query.text.clone()),
+                0.into(),
+                Chat::new_text("Server".into()),
+                false,
+                None,
+            )),
+        )).await;
+    }
+    (StatusCode::OK, Json(()))
+}

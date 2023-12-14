@@ -225,7 +225,7 @@ impl PackedArray {
 #[async_trait]
 impl WriteProt for PackedArray {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
-        VarInt::from(self.length).write(stream).await?;
+        VarInt::from(self.needed_u64s()).write(stream).await?;
         for i in 0..self.bits.len() {
             self.bits[i].write(stream).await?;
         }

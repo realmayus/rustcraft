@@ -1,5 +1,5 @@
 use crate::connection::ConnectionInfo;
-use crate::protocol_types::compound::{BitSet, BlockEntity, Chat, Position, Recipe, TagGroup};
+use crate::protocol_types::compound::{BitSet, BlockEntity, Chat, Position, Recipe, TagGroup, GameEvent};
 use crate::protocol_types::primitives::SizedVec;
 use crate::protocol_types::primitives::VarInt;
 use crate::protocol_types::traits::{ClientPacket, SizedProt, WriteProt, WriteProtPacket};
@@ -15,6 +15,7 @@ use std::sync::RwLock;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
+use std::env;
 
 packet!(
     StatusRes 0x00 {
@@ -161,6 +162,20 @@ packet!(
     }
 );
 
+
+packet!(
+    SendGameEvent 0x20 {
+        event: GameEvent,
+    }
+);
+
+packet!(
+    BlockUpdate 0x09 {
+        position: Position,
+        block_id: VarInt,
+    }
+);
+
 #[derive(WriteProtPacket, Clone)]
 pub(crate) enum ClientPackets {
     StatusRes(StatusRes),
@@ -180,4 +195,5 @@ pub(crate) enum ClientPackets {
     SetDefaultSpawnPosition(SetDefaultSpawnPosition),
     SetCenterChunk(SetCenterChunk),
     DisguisedChatMessage(DisguisedChatMessage),
+    BlockUpdate(BlockUpdate),
 }

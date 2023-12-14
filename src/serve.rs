@@ -1,8 +1,10 @@
+use std::env;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 use base64::Engine;
 use base64::engine::general_purpose;
+use dotenv::dotenv;
 use log::{debug, error, info};
 use openssl::rsa::Rsa;
 use tokio::fs;
@@ -13,6 +15,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use rustcraft_lib::web::dto;
 
 use crate::{Assets, MSG, ONLINE, PORT, web};
+use crate::chunk::world::World;
 use crate::connection::{ConnectionInfo, ConnectionState};
 use crate::data::registry::load_registry;
 use crate::err::ProtError;
@@ -20,6 +23,7 @@ use crate::packets::{client, parse};
 use crate::packets::client::ClientPackets;
 use crate::protocol_types::traits::WriteProtPacket;
 use crate::serve::ConnectionActorMessage::{PlayerInfo, SendPacket};
+
 
 async fn accept_packet(
     read: &mut OwnedReadHalf,
@@ -31,7 +35,9 @@ async fn accept_packet(
         let packet = parse::parse_packet(read, connection.clone()).await;
         match packet {
             Ok(p) => {
-                debug!("{} Inbound packet: {p:?}", read.peer_addr().unwrap());
+                if env::var("LOG_PACKETS").is_ok_and(|s| s == "true") {
+                    debug!("{} Inbound packet: {p:?}", read.peer_addr().unwrap());
+                }
                 let res = p.handle(connection.clone(), assets.clone()).await;
                 res
             }
@@ -126,7 +132,7 @@ impl ConnectionActor {
                     let connection = self.connection.read().unwrap();
                     dto::Player {
                         username: connection.username.clone(),
-                        uuid: "".to_string(),
+                        uuid: connection.uuid.to_string(),
                         position: dto::Position {
                             x: connection.position.x,
                             y: connection.position.y,
@@ -275,8 +281,10 @@ pub(crate) async fn start_server() {
         online: ONLINE,
         motd,
         registry,
+        world: RwLock::new(World::new_grass()),
     };
     let assets = Arc::new(assets);
+
 
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], PORT)))
         .await
@@ -292,7 +300,6 @@ pub(crate) async fn start_server() {
     // For every incoming connection on the listener, we spawn a new task with a reference to the assets (possibly an arc or sth else), and the stream
     loop {
         let (stream, addr) = listener.accept().await.unwrap();
-        println!("New accept: {:?}", addr);
         let assets = assets.clone();
         let handle = ConnectionActorHandle::new(stream, assets);
         connection_handles.write().await.push(handle);

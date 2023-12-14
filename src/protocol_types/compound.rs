@@ -42,7 +42,7 @@ impl SizedProt for Uuid {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub(crate) struct Position {
     pub(crate) x: i32,
     // actual size: 26 bits
@@ -597,5 +597,171 @@ impl SizedProt for Chat {
     fn prot_size(&self) -> usize {
         let json = serde_json::to_string(&serde_json::Value::Object(self.map.clone())).unwrap();
         json.prot_size()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum GameMode {
+    Survival,
+    Creative,
+    Adventure,
+    Spectator,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum WinGame {
+    JustRespawn,
+    RollCreditsAndRespawn,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum GameEvent {
+    NoRespawnBlock,
+    StartRain,
+    EndRain,
+    SetGameMode(GameMode),
+    WinGame(WinGame),
+    ArrowHit,
+    SetRainLevel(f32),
+    SetThunderLevel(f32),
+    PufferfishSting,
+    ElderGuardianAppearance,
+    SetRespawnScreen(bool),
+    SetLimitedCrafting(bool)
+}
+
+#[async_trait]
+impl WriteProt for GameEvent {
+    async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
+        match self {
+            GameEvent::NoRespawnBlock => {
+                0u8.write(stream).await?;
+                0f32.write(stream).await?;
+            }
+            GameEvent::StartRain => {
+                1u8.write(stream).await?;
+                0f32.write(stream).await?;
+            }
+            GameEvent::EndRain => {
+                2u8.write(stream).await?;
+                0f32.write(stream).await?;
+            }
+            GameEvent::SetGameMode(mode) => {
+                3u8.write(stream).await?;
+                let val = match mode {
+                    GameMode::Survival => 0,
+                    GameMode::Creative => 1,
+                    GameMode::Adventure => 2,
+                    GameMode::Spectator => 3
+                };
+                (val as f32).write(stream).await?;
+            }
+            GameEvent::WinGame(mode) => {
+                4u8.write(stream).await?;
+                let val = match mode {
+                    WinGame::JustRespawn => 0,
+                    WinGame::RollCreditsAndRespawn => 1
+                };
+                (val as f32).write(stream).await?;
+            }
+            GameEvent::ArrowHit => {
+                6u8.write(stream).await?;
+                0f32.write(stream).await?;
+            }
+            GameEvent::SetRainLevel(level) => {
+                7u8.write(stream).await?;
+                level.write(stream).await?;
+            }
+            GameEvent::SetThunderLevel(level) => {
+                8u8.write(stream).await?;
+                level.write(stream).await?;
+            }
+            GameEvent::PufferfishSting => {
+                9u8.write(stream).await?;
+                0f32.write(stream).await?;
+            }
+            GameEvent::ElderGuardianAppearance => {
+                10u8.write(stream).await?;
+                0f32.write(stream).await?;
+            }
+            GameEvent::SetRespawnScreen(mode) => {
+                11u8.write(stream).await?;
+                let val = match mode {
+                    true => 1,
+                    false => 0
+                };
+                (val as f32).write(stream).await?;
+            }
+            GameEvent::SetLimitedCrafting(mode) => {
+                12u8.write(stream).await?;
+                let val = match mode {
+                    true => 1,
+                    false => 0
+                };
+                (val as f32).write(stream).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SizedProt for GameEvent {
+    fn prot_size(&self) -> usize {
+        1 + 4
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PosRotGround {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) z: f64,
+    pub(crate) pitch: f64,
+    pub(crate) yaw: f64,
+    pub(crate) on_ground: bool,
+}
+
+impl From<PosRotGround> for Position {
+    fn from(pos: PosRotGround) -> Self {
+        Self {
+            x: pos.x.floor() as i32,
+            y: pos.y.floor() as i32,
+            z: pos.z.floor() as i32,
+        }
+    }
+}
+
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum PlayerActions {
+    StartDig,
+    CancelDig,
+    FinishDig,
+    DropStack,
+    DropItem,
+    ShootArrowFinishEating,
+    SwapHands,
+}
+
+#[async_trait]
+impl ReadProt for PlayerActions {
+    async fn read(stream: &mut (impl AsyncRead + Unpin + Send)) -> Result<Self, String> where Self: Sized {
+        let action = VarInt::read(stream).await?;
+        match action.value {
+            0 => Ok(PlayerActions::StartDig),
+            1 => Ok(PlayerActions::CancelDig),
+            2 => Ok(PlayerActions::FinishDig),
+            3 => Ok(PlayerActions::DropStack),
+            4 => Ok(PlayerActions::DropItem),
+            5 => Ok(PlayerActions::ShootArrowFinishEating),
+            6 => Ok(PlayerActions::SwapHands),
+            _ => Err(format!("Invalid player action: {}", action.value))
+        }
+    }
+}
+
+impl SizedProt for PlayerActions {
+    fn prot_size(&self) -> usize {
+        VarInt::from(0).prot_size()
     }
 }

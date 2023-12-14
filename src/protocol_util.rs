@@ -94,7 +94,7 @@ macro_rules! packet {
         #[async_trait]
         impl ServerPacket for $packet_name {
             #[allow(unused)]
-            async fn handle(&self, /*$stream: &mut TcpStream,*/ $conn: Arc<RwLock<Connection>>,$assets: Arc<Assets>) -> Result<Vec<ClientPackets>, ProtError> {
+            async fn handle(&self, /*$stream: &mut TcpStream,*/ $conn: Arc<RwLock<ConnectionInfo>>,$assets: Arc<Assets>) -> Result<Vec<ClientPackets>, ProtError> {
                 let $this = self;
                 $closure
             }
@@ -142,8 +142,10 @@ macro_rules! packet {
         #[async_trait]
         impl WriteProtPacket for $packet_name {
             #[allow(unused)]
-            async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send), connection: Arc<RwLock<Connection>>) -> Result<(), String> {
-                debug!("Outbound packet: {self:?} (len {})", self.prot_size() + VarInt::from(self.prot_size()).prot_size());
+            async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send), connection: Arc<RwLock<ConnectionInfo>>) -> Result<(), String> {
+                if env::var("LOG_PACKETS").is_ok_and(|s| s == "true") {
+                    debug!("Outbound packet: {self:?} (len {})", self.prot_size() + VarInt::from(self.prot_size()).prot_size());
+                }
                 let mut buf: Vec<u8> = Vec::with_capacity(self.prot_size() + VarInt::from(self.prot_size()).prot_size());
                 VarInt::from(self.prot_size()).write(&mut buf).await?;
                 VarInt::from(Self::id() as usize).write(&mut buf).await?;

@@ -1,9 +1,11 @@
+use std::sync::RwLock;
 use crate::serve::start_server;
 use async_nbt::NbtCompound;
 use dotenv::dotenv;
 use log::info;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
+use crate::chunk::world::World;
 
 mod chunk;
 mod connection;
@@ -57,4 +59,5 @@ struct Assets {
     online: bool,
     motd: String,
     registry: NbtCompound,
+    world: RwLock<World>,
 }

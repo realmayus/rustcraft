@@ -9,8 +9,6 @@ use openssl::rsa::Padding;
 use tokio::io::AsyncRead;
 use uuid::Uuid;
 
-use crate::chunk::section::ChunkSection;
-use crate::chunk::COLUMN_HEIGHT;
 use crate::connection::ConnectionInfo;
 use crate::connection::ConnectionState;
 use crate::encryption::encrypt;
@@ -19,13 +17,14 @@ use crate::err::ProtError::{KeepAliveIdMismatch, TeleportIdMismatch};
 use crate::packet;
 use crate::packet_base;
 use crate::packets::client;
-use crate::packets::client::ClientPackets;
-use crate::protocol_types::compound::{BitSet, Position};
+use crate::packets::client::{ChunkDataAndUpdateLight, ClientPackets};
+use crate::protocol_types::compound::{BitSet, Position, PlayerActions};
 use crate::protocol_types::primitives::SizedVec;
 use crate::protocol_types::primitives::VarInt;
 use crate::protocol_types::traits::{ReadProt, ReadProtPacket, ServerPacket, SizedProt, WriteProt};
 use crate::protocol_util::name_uuid;
 use crate::Assets;
+use crate::chunk::world::WorldPlayer;
 
 packet!(
     Handshake 0x00 {
@@ -113,6 +112,7 @@ packet!(
         let username = connection.read().unwrap().username.clone();
         let uuid = encrypt(shared_secret_plain, assets, username.clone()).await?;
         let res = client::LoginSuccess::new(uuid, username, VarInt::from(0));
+        connection.write().as_mut().unwrap().uuid = uuid;
         Ok(vec![ClientPackets::LoginSuccess(res)])
     }
 );
@@ -205,8 +205,11 @@ packet!(
         let p1 = client::SetHeldItem::new(0);
         let p2 = client::UpdateRecipes::new(vec![].into());
         guard.teleport_id = rand::random::<usize>().into();
+        let uuid = guard.uuid;
+        let world = assets.world.read().unwrap();
+        let pos = world.player(uuid).map(|p| p.position).unwrap_or(Position {x:0, y:0, z:0});
         let p3 = client::SynchronizePlayerPosition::new(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0u8,
+            pos.x as f64, pos.y as f64 + 4.0, pos.z as f64, 0.0, 0.0, 0u8,
             guard.teleport_id.clone(),
         );
         Ok(vec![ClientPackets::SetHeldItem(p1), ClientPackets::UpdateRecipes(p2), ClientPackets::SynchronizePlayerPosition(p3)])
@@ -221,12 +224,17 @@ packet!(
         on_ground: bool,
     },
     handler |this, connection, assets| {
-        let mut guard = connection.write();
-        let guard = guard.as_mut().unwrap();
-        guard.position.x = this.x;
-        guard.position.y = this.y;
-        guard.position.z = this.z;
-        guard.position.on_ground = this.on_ground;
+        let mut guard = assets.world.write();
+        let mut guard = guard.as_mut().unwrap();
+        guard.set_player(WorldPlayer {
+            uuid: connection.read().unwrap().uuid,
+            username: connection.read().unwrap().username.clone(),
+            position: Position {
+                x: this.x as i32,
+                y: this.y as i32,
+                z: this.z as i32,
+            },
+        });
         Ok(vec![])
     }
 );
@@ -269,63 +277,6 @@ packet!(
     }
 );
 
-async fn get_chunks() -> Vec<u8> {
-    let mut chunks = vec![];
-    for _ in 0..COLUMN_HEIGHT {
-        let mut chunk = ChunkSection::new();
-        chunk.fill(8);
-        chunk.set_block(Position::new(5, 5, 5), 1).unwrap();
-        let mut buf = vec![];
-        chunk.write(&mut buf).await.unwrap();
-        chunks.append(&mut buf);
-        // }
-    }
-    chunks
-}
-packet!(
-    ConfirmTeleportation 0x00 {
-        teleport_id: VarInt,
-    },
-    handler |this, connection, assets| {
-        let expected_id = connection.read().unwrap().teleport_id;
-        if expected_id == this.teleport_id {
-            let stone = get_chunks().await;
-            let mut chunks: Vec<client::ChunkDataAndUpdateLight> = vec![];
-            for i in -3..=3 {
-                for j in -3..=3 {
-                    let p = client::ChunkDataAndUpdateLight::new(
-                        i,
-                        j,
-                        NbtCompound::new(),
-                        stone.clone().into(),
-                        vec![].into(),
-                        BitSet(vec![].into()),
-                        BitSet(vec![].into()),
-                        BitSet(vec![].into()),
-                        BitSet(vec![].into()),
-                        vec![].into(),
-                        vec![].into()
-                    );
-                    chunks.push(p);
-                }
-            }
-
-
-            let p6 = client::SetDefaultSpawnPosition::new(Position {x:0, y:0, z:0}, 0.0);
-            let p7 = client::SetCenterChunk::new(0.into(), 0.into());
-            println!("Sending chunks");
-            let mut to_send = vec![ClientPackets::SetDefaultSpawnPosition(p6), ClientPackets::SetCenterChunk(p7)];
-            for chunk in chunks {
-                to_send.push(ClientPackets::ChunkDataAndUpdateLight(chunk));
-            }
-            println!("Sending {} packets", to_send.len());
-            Ok(to_send)
-        } else {
-            Err(TeleportIdMismatch(expected_id, this.teleport_id))
-        }
-    }
-);
-
 packet!(
     PlayerCommand 0x21 {
         entity: VarInt,
@@ -334,5 +285,84 @@ packet!(
     },
     handler |_this, connection, assets| {
         Ok(vec![])
+    }
+);
+
+
+packet!(
+    PlayerAction 0x20 {
+        action: PlayerActions,
+        position: Position,
+        face: u8,
+        sequence: VarInt,
+    },
+    handler |this, connection, assets| {
+        match this.action {
+            PlayerActions::FinishDig => {
+                let mut world = assets.world.write();
+                let mut world = world.as_mut().unwrap();
+                return Ok(world.set_block(this.position, 0).unwrap());
+            }
+            _ => println!("PlayerAction: {:?}", this.action)
+        }
+        Ok(vec![])
+    }
+);
+
+// async fn get_chunks() -> Vec<u8> {
+//     let mut chunks = vec![];
+//     for i in 0..COLUMN_HEIGHT {
+//         let mut chunk = ChunkSection::new();
+//         if i < 3 {
+//             chunk.fill(9);
+//             chunk.set_block(Position::new(5, 5, 5), 1).unwrap();
+//         }
+//         let mut buf = vec![];
+//         chunk.write(&mut buf).await.unwrap();
+//         chunks.append(&mut buf);
+//     }
+//     chunks
+// }
+packet!(
+    ConfirmTeleportation 0x00 {
+        teleport_id: VarInt,
+    },
+    handler |this, connection, assets| {
+        let expected_id = connection.read().unwrap().teleport_id;
+        if expected_id == this.teleport_id {
+            let p6 = client::SetDefaultSpawnPosition::new(Position {x:0, y:0, z:0}, 0.0);
+            let p7 = client::SetCenterChunk::new(0.into(), 0.into());
+            let mut to_send = vec![ClientPackets::SetDefaultSpawnPosition(p6), ClientPackets::SetCenterChunk(p7)];
+
+            let chunks = {
+                let chunks = assets.world.read().unwrap();
+                let chunks = chunks.get_chunk_radius(connection.read().unwrap().position.clone().into(), 3);
+                chunks
+            };
+            for (x, z, chunk) in chunks {
+                let mut col_bytes = vec![];
+                for section in chunk {
+                    section.write(&mut col_bytes).await.unwrap();
+                }
+                to_send.push(ClientPackets::ChunkDataAndUpdateLight(
+                    ChunkDataAndUpdateLight::new(
+                        x,
+                        z,
+                        NbtCompound::new(),
+                        col_bytes.into(),
+                        vec![].into(),
+                        BitSet(vec![].into()),
+                        BitSet(vec![].into()),
+                        BitSet(vec![].into()),
+                        BitSet(vec![].into()),
+                        vec![].into(),
+                        vec![].into(),
+                    )
+                ));
+            }
+            Ok(to_send)
+        } else {
+            Err(TeleportIdMismatch(expected_id, this.teleport_id))
+        }
     }
 );

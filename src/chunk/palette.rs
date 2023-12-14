@@ -16,7 +16,7 @@ use crate::protocol_types::compound::Position;
 use crate::protocol_types::primitives::VarInt;
 use crate::protocol_types::traits::WriteProt;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub(crate) enum PaletteKind {
     Blocks,
     Biomes,
@@ -102,6 +102,7 @@ impl PaletteKind {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct PalettedContainer {
     pub(crate) palette: Option<Palette>,
     pub(crate) data: PackedArray,
@@ -145,6 +146,7 @@ impl PalettedContainer {
     }
 
     pub(crate) fn get_at(&self, position: Position) -> PaletteValue {
+        // println!("Accessing position: {:?}", position);
         let index = self.block_index(position);
         if let Some(index) = index {
             let block = match &self.palette {
@@ -222,6 +224,7 @@ impl WriteProt for PalettedContainer {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Palette {
     pub(crate) id_to_state: HashMap<u32, PaletteValue>,
     state_to_id: HashMap<PaletteValue, u32>,
@@ -264,10 +267,10 @@ impl Palette {
 impl WriteProt for Palette {
     async fn write(&self, stream: &mut (impl AsyncWrite + Unpin + Send)) -> Result<(), String> {
         VarInt::from(self.len()).write(stream).await?;
-        let mut i = 0u32;  // todo check this
-        for (id, state) in &self.id_to_state {
-            // assert_eq!(id, &i);
-            i += 1;
+
+        let mut id_to_state: Vec<(&u32, &PaletteValue)> = self.id_to_state.iter().collect();
+        id_to_state.sort_by(|a, b| a.0.cmp(b.0));
+        for (_, state) in id_to_state {
             VarInt::from(*state).write(stream).await?;
         }
 

@@ -87,6 +87,9 @@ pub(crate) async fn parse_packet(
         (0x18, ConnectionState::Play) => {
             Box::new(server::SetPlayerRotation::read(&mut read_from).await?)
         }
+        (0x20, ConnectionState::Play) => {
+            Box::new(server::PlayerAction::read(&mut read_from).await?)
+        }
         (0x21, ConnectionState::Play) => {
             Box::new(server::PlayerCommand::read(&mut read_from).await?)
         }

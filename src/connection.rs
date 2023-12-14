@@ -3,8 +3,10 @@ use std::fmt::{Debug, Formatter};
 use log::debug;
 use openssl::symm::Crypter;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::packets::client::ClientPackets;
+use crate::protocol_types::compound::PosRotGround;
 use crate::protocol_types::primitives::VarInt;
 
 #[derive(Debug, Copy, Clone)]
@@ -16,26 +18,17 @@ pub(crate) enum ConnectionState {
     Play,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct Position {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-    pub(crate) z: f64,
-    pub(crate) pitch: f64,
-    pub(crate) yaw: f64,
-    pub(crate) on_ground: bool,
-}
-
 pub(crate) struct ConnectionInfo {
     state: ConnectionState,
     pub(crate) verify_token: Vec<u8>,
     pub(crate) encrypter: Option<Crypter>,
     pub(crate) decrypter: Option<Crypter>,
     pub(crate) username: String,
+    pub(crate) uuid: Uuid,
     pub(crate) teleport_id: VarInt,
     pub(crate) keep_alive_id: i64,
     closed: bool,
-    pub(crate) position: Position,
+    pub(crate) position: PosRotGround,
     tx: Option<mpsc::Sender<ClientPackets>>,
 }
 impl Debug for ConnectionInfo {
@@ -57,10 +50,11 @@ impl ConnectionInfo {
             encrypter: None,
             decrypter: None,
             username: "".to_string(),
+            uuid: Uuid::nil(),
             teleport_id: 0.into(),
             keep_alive_id: 0,
             closed: false,
-            position: Position {
+            position: PosRotGround {
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,

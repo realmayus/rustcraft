@@ -1,7 +1,13 @@
+use crate::chunk::section::ChunkSection;
+
 mod palette;
 pub(crate) mod section;
 
 mod packed_array;
+pub(crate) mod world;
+
+type ChunkCol = Vec<ChunkSection>;
+type ChunkColRef<'a> = Vec<&'a ChunkSection>;
 
 type BlockState = u32;
 type Biome = u32;

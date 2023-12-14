@@ -65,7 +65,7 @@ pub fn derive_write_prot_packet(input: TokenStream) -> TokenStream {
                 async fn write(
                         &self,
                         stream: &mut (impl AsyncWrite + Unpin + Send),
-                        connection: Arc<RwLock<Connection>>,
+                        connection: Arc<RwLock<ConnectionInfo>>,
                     ) -> Result<(), String> {
                     match self {
                         #(#match_arms)*

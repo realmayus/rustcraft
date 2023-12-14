@@ -6,10 +6,11 @@ use crate::protocol_types::traits::WriteProt;
 use async_trait::async_trait;
 use tokio::io::AsyncWrite;
 
+#[derive(Clone)]
 pub(crate) struct ChunkSection {
     air_count: u16,
-    blocks: PalettedContainer,
-    biomes: PalettedContainer,
+    pub(crate) blocks: PalettedContainer,
+    pub(crate) biomes: PalettedContainer,
 }
 impl ChunkSection {
     pub(crate) fn new() -> Self {
@@ -79,17 +80,8 @@ impl WriteProt for ChunkSection {
         (SECTION_BLOCKS as u16 - self.air_count)
             .write(stream)
             .await?;
-        // println!("air count: {}", self.air_count);
         self.blocks.write(stream).await?;
-        // println!(
-        //     "block: palette: {:?}\ndata: {:?}",
-        //     self.blocks.palette, self.blocks.data
-        // );
         self.biomes.write(stream).await?;
-        // println!(
-        //     "biomes: palette: {:?}\ndata: {:?}",
-        //     self.biomes.palette, self.biomes.data
-        // );
         Ok(())
     }
 }
